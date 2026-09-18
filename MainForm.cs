@@ -1736,7 +1736,14 @@ public sealed class MainForm : Form
             " · 道路边 " + stats.Edges +
             " · 已验证 " + stats.VerifiedEdges +
             " · 实车学习 " + stats.LearnedEdges +
-            "\r\n网络总长 " + stats.NetworkKm.ToString("F2") + " km";
+            " · 自动 " + stats.AutoEdges +
+            " · AI学习 " + stats.AiLearnedEdges +
+            "\r\n网络总长 " +
+            stats.NetworkKm.ToString("F2") +
+            " km · 临时危险 " +
+            _hazards.GetActive(_map.Text).Count +
+            " · 视觉证据 " +
+            _visionEvidence.GetActive(_map.Text).Count;
     }
 
     private void UpdateCalibrationStatus()
