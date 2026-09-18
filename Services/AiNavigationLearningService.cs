@@ -104,6 +104,7 @@ public sealed class AiNavigationLearningService
                 e.Source,
                 e.Verified,
                 e.Risk,
+                e.AiRiskAdjustment,
                 e.Traversals,
                 e.AutoScore,
                 e.VehicleSpeedMultipliers,
