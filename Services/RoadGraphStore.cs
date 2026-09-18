@@ -78,6 +78,10 @@ public sealed class RoadGraphStore
             VerifiedEdges = graph.Edges.Count(e => e.Verified && !e.Blocked),
             LearnedEdges = graph.Edges.Count(e => e.Source.Equals("trace", StringComparison.OrdinalIgnoreCase)),
             AutoEdges = graph.Edges.Count(e => e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)),
+            AiLearnedEdges = graph.Edges.Count(e =>
+                e.AiConfidence > 0 ||
+                Math.Abs(e.AiRiskAdjustment) > 1e-9 ||
+                (e.VehicleSpeedMultipliers?.Count ?? 0) > 0),
             NetworkKm = meters / 1000.0
         };
     }
@@ -188,10 +192,10 @@ public sealed class RoadGraphStore
             if (edge == null)
                 continue;
 
-            edge.Risk = Math.Clamp(
-                edge.Risk + Math.Clamp(suggestion.RiskDelta, -0.20, 0.20),
-                0,
-                1);
+            edge.AiRiskAdjustment = Math.Clamp(
+                suggestion.RiskDelta,
+                -0.20,
+                0.20);
 
             edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
             edge.VehicleSpeedMultipliers[suggestion.VehicleId] =
@@ -216,11 +220,13 @@ public sealed class RoadGraphStore
         foreach (var edge in graph.Edges)
         {
             if ((edge.VehicleSpeedMultipliers?.Count ?? 0) == 0 &&
+                Math.Abs(edge.AiRiskAdjustment) <= 1e-9 &&
                 edge.AiConfidence <= 0 &&
                 string.IsNullOrWhiteSpace(edge.AiNote))
                 continue;
 
             edge.VehicleSpeedMultipliers = new Dictionary<string, double>();
+            edge.AiRiskAdjustment = 0;
             edge.AiConfidence = 0;
             edge.AiNote = "";
             edge.AiUpdatedUtc = null;
