@@ -859,7 +859,32 @@ public sealed class MainForm : Form
 
             if (_navigationLearning.IsActive)
             {
-                _navigationLearning.NoteReplan(_route);
+                var sameLearningContext =
+                    _navigationLearning.VehicleId.Equals(
+                        profile.VehicleId,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    _navigationLearning.Preference ==
+                        preference;
+
+                if (sameLearningContext)
+                {
+                    _navigationLearning.NoteReplan(
+                        _route);
+                }
+                else
+                {
+                    StoreNavigationExperience(
+                        completed: false);
+
+                    _navigationLearning.Start(
+                        _map.Text,
+                        profile.VehicleId,
+                        preference,
+                        _route,
+                        _currentRoadGraph,
+                        self,
+                        speed);
+                }
             }
             else if (_live)
             {
