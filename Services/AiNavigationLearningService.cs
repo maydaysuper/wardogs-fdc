@@ -108,7 +108,9 @@ public sealed class AiNavigationLearningService
                 e.Traversals,
                 e.AutoScore,
                 e.LocalVehicleSpeedMultipliers,
+                e.LocalVehicleSpeedLearning,
                 e.VehicleSpeedMultipliers,
+                e.VehicleAiConfidences,
                 e.AiConfidence
             })
             .ToList();
@@ -145,8 +147,12 @@ public sealed class AiNavigationLearningService
             "riskDelta 是独立 AI 风险修正层，范围 -0.20 到 0.20，不要累计历史修正；" +
             "speedMultiplier 范围 0.55 到 1.25；" +
             "confidence 范围 0 到 1。 " +
-            "speedMultiplier 是对该车型在该路段相对既有道路速度模型的修正，不是绝对速度。 " +
-            "只有多个样本、足够采样点或持续异常时才给高置信度；单次异常必须低置信。 " +
+            "speedMultiplier 是 AI 的补充修正，不是绝对速度。 " +
+            "LocalVehicleSpeedLearning 是真实驾驶产生的本地速度模型；其中 confidence 越高，" +
+            "越应该把它视为主基线。若本地 confidence 已高且近期数据没有持续残差异常，" +
+            "speedMultiplier 应接近 1，而不是重复重学同一个速度差。 " +
+            "只有多个独立行程、足够采样点或持续异常时才给高置信度；单次异常必须低置信。 " +
+            "riskDelta 只有在持续高偏差、重复重规划或明显无法按计划通过时才应显著调整。 " +
             "不要把普通偏航自动解释为敌情或危险。 " +
             "JSON 格式示例：{\"summary\":\"...\",\"suggestions\":[{" +
             "\"edgeId\":\"e1\",\"vehicleId\":\"ural\",\"riskDelta\":0.05," +
@@ -175,18 +181,106 @@ public sealed class AiNavigationLearningService
             .Select(x => x.vehicleId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var aggregateLookup = aggregate.ToDictionary(
+            x => x.edgeId + "\u001f" + x.vehicleId,
+            x => x,
+            StringComparer.OrdinalIgnoreCase);
+
+        var edgeLookup = graph.Edges.ToDictionary(
+            x => x.Id,
+            StringComparer.OrdinalIgnoreCase);
+
         report.Suggestions = report.Suggestions
             .Where(s =>
                 validEdges.Contains(s.EdgeId) &&
                 validVehicles.Contains(s.VehicleId))
-            .Select(s => new AiRoadSuggestion
+            .Select(s =>
             {
-                EdgeId = s.EdgeId,
-                VehicleId = s.VehicleId,
-                RiskDelta = Math.Clamp(s.RiskDelta, -0.20, 0.20),
-                SpeedMultiplier = Math.Clamp(s.SpeedMultiplier, 0.55, 1.25),
-                Confidence = Math.Clamp(s.Confidence, 0, 1),
-                Reason = s.Reason ?? ""
+                var confidence =
+                    Math.Clamp(
+                        s.Confidence,
+                        0,
+                        1);
+
+                var speed =
+                    Math.Clamp(
+                        s.SpeedMultiplier,
+                        0.55,
+                        1.25);
+
+                var risk =
+                    Math.Clamp(
+                        s.RiskDelta,
+                        -0.20,
+                        0.20);
+
+                var key =
+                    s.EdgeId +
+                    "\u001f" +
+                    s.VehicleId;
+
+                aggregateLookup.TryGetValue(
+                    key,
+                    out var observed);
+
+                edgeLookup.TryGetValue(
+                    s.EdgeId,
+                    out var edge);
+
+                var localConfidence = 0.0;
+
+                if (edge?.LocalVehicleSpeedLearning.TryGetValue(
+                        s.VehicleId,
+                        out var state) == true)
+                {
+                    localConfidence =
+                        Math.Clamp(
+                            state.Confidence,
+                            0,
+                            1);
+                }
+
+                // Strong local driving evidence owns the speed baseline.
+                // AI may still flag a residual anomaly, but needs repeated
+                // trips before it can receive high confidence.
+                if (localConfidence >= 0.75 &&
+                    Math.Abs(speed - 1.0) > 0.10 &&
+                    (observed == null ||
+                     observed.trips < 3))
+                {
+                    confidence =
+                        Math.Min(
+                            confidence,
+                            0.68);
+                }
+
+                if (observed != null)
+                {
+                    if (observed.trips < 2 ||
+                        observed.samples < 6)
+                    {
+                        confidence =
+                            Math.Min(
+                                confidence,
+                                0.65);
+                    }
+
+                    if (observed.averageReplans < 0.50 &&
+                        observed.maxDeviationMeters < 80)
+                    {
+                        risk *= 0.25;
+                    }
+                }
+
+                return new AiRoadSuggestion
+                {
+                    EdgeId = s.EdgeId,
+                    VehicleId = s.VehicleId,
+                    RiskDelta = risk,
+                    SpeedMultiplier = speed,
+                    Confidence = confidence,
+                    Reason = s.Reason ?? ""
+                };
             })
             .ToList();
 
