@@ -642,6 +642,8 @@ public sealed class MainForm : Form
 
     private async Task SwitchMapAsync()
     {
+        StoreNavigationExperience(completed: false);
+
         var requestedMapId = _map.Text;
 
         if (_autoExtractMapId != null &&
@@ -662,6 +664,7 @@ public sealed class MainForm : Form
         _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
+        UpdateHazards();
         UpdateRoadGraphStatus();
         UpdateMapState();
 
@@ -696,6 +699,7 @@ public sealed class MainForm : Form
         if (_economyGrid.CurrentRow?.DataBoundItem is not EconomyRow row) return;
 
         _selectedEconomicPlan = row.Plan;
+        SelectNavigationVehicle(row.Plan.Vehicle.Id);
         SetTarget(row.Plan.Destination.Position);
         await PlanRouteAsync(true);
     }
@@ -717,7 +721,8 @@ public sealed class MainForm : Form
         {
             _routeSummary.Text = "路线：正在分析真实地图道路…";
 
-            var vehicle = _selectedEconomicPlan?.Vehicle;
+            var vehicle = SelectedNavigationVehicle();
+            var profile = VehicleRoutingProfileService.For(vehicle);
             var speed = vehicle?.SpeedKmh ?? 80;
             var air = vehicle?.Air ?? false;
             var preference = Enum.TryParse<RoutePreference>(_routeMode.Text, out var parsed)
@@ -731,7 +736,22 @@ public sealed class MainForm : Form
                 preference,
                 speed,
                 air,
+                profile,
                 token);
+
+            if (_navigationLearning.IsActive)
+            {
+                _navigationLearning.NoteReplan(_route);
+            }
+            else if (_live)
+            {
+                _navigationLearning.Start(
+                    _map.Text,
+                    profile.VehicleId,
+                    preference,
+                    _route,
+                    self);
+            }
 
             var cue = RoutePlanner.BuildCue(_route, self, _headingDeg);
 
@@ -813,9 +833,27 @@ public sealed class MainForm : Form
         {
             _overlay.Show();
             _liveTimer.Start();
+
+            if (_route != null && TryPoint(_selfX, _selfY, out var current))
+            {
+                var vehicle = SelectedNavigationVehicle();
+                var profile = VehicleRoutingProfileService.For(vehicle);
+                var preference = Enum.TryParse<RoutePreference>(_routeMode.Text, out var parsed)
+                    ? parsed
+                    : RoutePreference.Fastest;
+
+                _navigationLearning.Start(
+                    _map.Text,
+                    profile.VehicleId,
+                    preference,
+                    _route,
+                    current);
+            }
         }
         else
         {
+            StoreNavigationExperience(completed: false);
+
             if (!_traceLearning.IsRecording)
                 _liveTimer.Stop();
         }
@@ -833,6 +871,7 @@ public sealed class MainForm : Form
 
         _lastLivePoint = now;
         SetSelf(now);
+        _navigationLearning.NotePoint(now);
 
         if (_traceLearning.IsRecording)
         {
@@ -892,6 +931,24 @@ public sealed class MainForm : Form
         {
             _lastCueIndex = cue.RouteIndex;
             Speak("已到达目的地");
+        }
+
+        if (cue.Arrived && _navigationLearning.IsActive)
+        {
+            StoreNavigationExperience(completed: true);
+
+            if (_settings.AiAutoApplyNavigationLearning &&
+                !string.IsNullOrWhiteSpace(_apiKey.Text))
+            {
+                var snapshot = _experiences.Snapshot(_map.Text);
+                if (snapshot.CompletedCount >= 3 &&
+                    snapshot.CompletedCount % 3 == 0)
+                {
+                    await AnalyzeNavigationLearningAsync(
+                        autoApply: true,
+                        silent: true);
+                }
+            }
         }
     }
 
