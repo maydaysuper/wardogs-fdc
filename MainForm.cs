@@ -1043,6 +1043,22 @@ public sealed class MainForm : Form
                 }
             }
         }
+
+        if (!cue.Arrived &&
+            _settings.AiAutoVisionScan &&
+            _settings.VisionMapRegion.IsValid &&
+            !string.IsNullOrWhiteSpace(_apiKey.Text) &&
+            _route?.EdgeIds.Count > 0 &&
+            !_visionBusy &&
+            DateTime.UtcNow - _lastAutoVisionScan >
+                TimeSpan.FromMinutes(3))
+        {
+            _lastAutoVisionScan = DateTime.UtcNow;
+
+            await AnalyzeVisionRouteAsync(
+                autoApply: true,
+                silent: true);
+        }
     }
 
     private async Task TestAiAsync()
@@ -1100,6 +1116,224 @@ public sealed class MainForm : Form
         }
     }
 
+
+
+    private async Task AnalyzeVisionRouteAsync(
+        bool autoApply,
+        bool silent)
+    {
+        if (_visionBusy)
+            return;
+
+        if (_route == null || _route.EdgeIds.Count == 0)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "当前路线没有 Road Graph 路段，无法进行 edge 级视觉检查。";
+            return;
+        }
+
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "请先在“校准”页框选游戏地图视觉区域。";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_apiKey.Text))
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "请先保存 DeepSeek API Key。";
+            return;
+        }
+
+        var mapId = _map.Text;
+        var routeSnapshot = _route;
+        _visionBusy = true;
+
+        _visionCts?.Cancel();
+        _visionCts?.Dispose();
+
+        var localCts =
+            new CancellationTokenSource(
+                TimeSpan.FromSeconds(55));
+        _visionCts = localCts;
+
+        try
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "正在截取游戏地图并进行 DeepSeek 视觉对照…";
+
+            using var gameMap =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            MapPoint? current =
+                TryPoint(
+                    _selfX,
+                    _selfY,
+                    out var self)
+                    ? self
+                    : null;
+
+            MapPoint? target =
+                TryPoint(
+                    _targetX,
+                    _targetY,
+                    out var tgt)
+                    ? tgt
+                    : null;
+
+            var report =
+                await _aiVision.AnalyzeRouteAsync(
+                    _apiKey.Text,
+                    mapId,
+                    _currentRoadGraph,
+                    routeSnapshot,
+                    gameMap,
+                    current,
+                    target,
+                    localCts.Token);
+
+            if (!_map.Text.Equals(
+                    mapId,
+                    StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _lastVisionReport = report;
+
+            var applied = 0;
+
+            if (autoApply)
+            {
+                applied = ApplyVisionReport(
+                    report,
+                    _settings.AiVisionMinConfidence);
+            }
+
+            if (!silent)
+            {
+                var lines = report.Findings
+                    .OrderByDescending(x => x.Confidence)
+                    .Take(24)
+                    .Select(x =>
+                        x.EdgeId +
+                        " · " +
+                        x.Kind +
+                        " · 风险 " +
+                        Math.Round(
+                            x.Severity * 100)
+                            .ToString("F0") +
+                        "% · 置信 " +
+                        Math.Round(
+                            x.Confidence * 100)
+                            .ToString("F0") +
+                        "% · " +
+                        x.Reason)
+                    .ToList();
+
+                _aiOutput.Text =
+                    report.Summary +
+                    "\r\n\r\n" +
+                    (lines.Count == 0
+                        ? "视觉检查未发现需要标记的当前路线异常。"
+                        : string.Join(
+                            "\r\n",
+                            lines)) +
+                    (autoApply
+                        ? "\r\n\r\n已应用 " +
+                          applied +
+                          " 条高置信临时视觉证据。"
+                        : "");
+            }
+
+            if (autoApply && applied > 0)
+                await PlanRouteAsync(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "AI 视觉检查已取消/超时。";
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "AI 视觉检查失败：" +
+                    ex.Message;
+        }
+        finally
+        {
+            if (ReferenceEquals(
+                    _visionCts,
+                    localCts))
+            {
+                _visionCts = null;
+            }
+
+            localCts.Dispose();
+            _visionBusy = false;
+        }
+    }
+
+    private int ApplyVisionReport(
+        AiVisionNavigationReport report,
+        double minimumConfidence)
+    {
+        var validEdgeIds =
+            _currentRoadGraph.Edges
+                .Select(x => x.Id)
+                .ToHashSet(
+                    StringComparer.OrdinalIgnoreCase);
+
+        var ttl = TimeSpan.FromMinutes(
+            Math.Clamp(
+                _settings.AiVisionEvidenceMinutes,
+                1,
+                30));
+
+        var applied =
+            _visionEvidence.ApplyReport(
+                _map.Text,
+                report,
+                validEdgeIds,
+                minimumConfidence,
+                ttl);
+
+        UpdateVisionEvidence();
+        return applied;
+    }
+
+    private void ApplyLastVisionEvidence(
+        double minimumConfidence)
+    {
+        if (_lastVisionReport == null)
+        {
+            _aiOutput.Text =
+                "请先执行“AI视觉检查当前路线”。";
+            return;
+        }
+
+        var applied =
+            ApplyVisionReport(
+                _lastVisionReport,
+                minimumConfidence);
+
+        _aiOutput.Text =
+            _lastVisionReport.Summary +
+            "\r\n\r\n已应用 " +
+            applied +
+            " 条置信度 ≥ " +
+            Math.Round(
+                minimumConfidence * 100)
+                .ToString("F0") +
+            "% 的临时视觉证据。";
+    }
 
     private async Task AnalyzeNavigationLearningAsync(bool autoApply, bool silent)
     {
@@ -1264,7 +1498,54 @@ public sealed class MainForm : Form
 
     private void UpdateHazards()
     {
-        _mapCanvas.SetHazards(_hazards.GetActive(_map.Text));
+        _mapCanvas.SetHazards(
+            _hazards.GetActive(_map.Text));
+    }
+
+    private void UpdateVisionEvidence()
+    {
+        _mapCanvas.SetVisionEvidence(
+            _visionEvidence.GetActive(
+                _map.Text));
+    }
+
+
+    private void CalibrateVisionMapRegion()
+    {
+        var client =
+            _capture.GetClientScreenRect(
+                _settings.GameWindowTitleContains);
+
+        if (client == null)
+        {
+            MessageBox.Show(
+                "未找到游戏窗口，请先确认窗口标题并使用窗口化/无边框。");
+            return;
+        }
+
+        using var selector =
+            new RegionSelectForm();
+
+        if (selector.ShowDialog(this) !=
+            DialogResult.OK)
+            return;
+
+        var normalized =
+            GameWindowCapture.ToNormalized(
+                selector.SelectedScreenRectangle,
+                client.Value);
+
+        if (!normalized.IsValid)
+        {
+            MessageBox.Show(
+                "地图视觉选区无效。");
+            return;
+        }
+
+        _settings.VisionMapRegion =
+            normalized;
+        _settings.Save();
+        UpdateCalibrationStatus();
     }
 
     private void CalibrateRegion(bool player)
