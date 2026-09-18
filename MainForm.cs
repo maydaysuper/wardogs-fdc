@@ -16,12 +16,15 @@ public sealed class MainForm : Form
     private readonly NavigationHazardStore _hazards = new();
     private readonly NavigationVisionEvidenceStore _visionEvidence = new();
     private readonly NavigationExperienceStore _experiences = new();
+    private readonly NavigationMapMemoryStore _visualMapMemory = new();
     private readonly NavigationLearningSession _navigationLearning = new();
     private readonly NavigationGuidanceTracker _guidance = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly AiNavigationLearningService _aiNavigationLearning;
     private readonly AiVisionNavigationService _aiVision;
+    private readonly MapVisualRegistrationService _mapVisualRegistration;
+    private readonly TargetMarkerDetector _targetMarkerDetector = new();
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -34,6 +37,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _routeMode = new();
     private readonly ComboBox _navVehicle = new();
     private readonly CheckBox _autoTargetCheck = new();
+    private readonly CheckBox _visualTargetCheck = new();
     private readonly TextBox _selfX = new();
     private readonly TextBox _selfY = new();
     private readonly TextBox _targetX = new();
@@ -81,6 +85,8 @@ public sealed class MainForm : Form
     private DateTime _lastAutoVisionScan = DateTime.MinValue;
     private DateTime _lastTargetOcrUtc = DateTime.MinValue;
     private DateTime _lastRerouteUtc = DateTime.MinValue;
+    private MapViewportRegistration? _lastMapRegistration;
+    private VisualTargetDetection? _lastVisualTargetDetection;
     private CancellationTokenSource? _visionCts;
 
     public MainForm()
@@ -93,6 +99,9 @@ public sealed class MainForm : Form
         _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
         _aiNavigationLearning = new AiNavigationLearningService(_ai);
         _aiVision = new AiVisionNavigationService(_ai, _mapAssets);
+        _mapVisualRegistration =
+            new MapVisualRegistrationService(
+                _mapAssets);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
@@ -189,6 +198,18 @@ public sealed class MainForm : Form
             _settings.Save();
         };
         p.Controls.Add(_autoTargetCheck);
+
+        _visualTargetCheck.Text =
+            "优先使用地图视觉识别目标标记";
+        _visualTargetCheck.AutoSize = true;
+        _visualTargetCheck.ForeColor = Color.Gainsboro;
+        _visualTargetCheck.CheckedChanged += (_, _) =>
+        {
+            _settings.VisualTargetNavigationEnabled =
+                _visualTargetCheck.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_visualTargetCheck);
 
         var buttons = new FlowLayoutPanel
         {
@@ -655,24 +676,49 @@ public sealed class MainForm : Form
         var visionMap = Btn("框选游戏地图视觉区域");
         visionMap.Click += (_, _) => CalibrateVisionMapRegion();
 
+        var marker = Btn("校准目标标记图标");
+        marker.Click += async (_, _) =>
+            await CalibrateTargetMarkerAsync();
+
+        var testRegistration = Btn("测试视觉配准");
+        testRegistration.Click += async (_, _) =>
+            await TestVisualRegistrationAsync();
+
+        var clearVisualMemory = Btn("清除当前地图视觉记忆");
+        clearVisualMemory.Click += (_, _) =>
+        {
+            _visualMapMemory.Clear(_map.Text);
+            _lastMapRegistration = null;
+            _lastVisualTargetDetection = null;
+            _mapCanvas.SetVisualMapState(
+                null,
+                null,
+                0);
+            UpdateCalibrationStatus();
+        };
+
         p.Controls.Add(self);
         p.Controls.Add(target);
         p.Controls.Add(visionMap);
+        p.Controls.Add(marker);
+        p.Controls.Add(testRegistration);
+        p.Controls.Add(clearVisualMemory);
 
         _calibrationStatus.Width = 400;
-        _calibrationStatus.Height = 145;
+        _calibrationStatus.Height = 205;
         p.Controls.Add(_calibrationStatus);
 
         p.Controls.Add(new Label
         {
             AutoSize = false,
             Width = 400,
-            Height = 170,
+            Height = 220,
             ForeColor = Color.Silver,
             Text =
                 "校准区域按游戏窗口客户区比例保存，因此 1080p / 1440p / 4K 切换后仍可复用。\r\n\r\n" +
-                "“游戏地图视觉区域”只用于 AI 视觉检查；尽量框住地图本体并减少聊天框/菜单等遮挡。\r\n\r\n" +
-                "程序只抓取屏幕像素；不读取进程内存、不注入、不安装驱动。"
+                "“游戏地图视觉区域”同时用于 AI 路线视觉检查和本地地图配准；尽量框住地图本体并减少聊天框/菜单遮挡。\r\n\r\n" +
+                "目标标记图标只需校准一次：打开游戏地图、放一个目标标记，然后点“校准目标标记图标”并点击标记中心。\r\n\r\n" +
+                "程序只抓取屏幕像素；本地目标识别不读取进程内存、不注入、不安装驱动，也不需要调用 AI API。"
         });
 
         tab.Controls.Add(p);
@@ -746,6 +792,8 @@ public sealed class MainForm : Form
 
         _autoTargetCheck.Checked =
             _settings.AutoReadTarget;
+        _visualTargetCheck.Checked =
+            _settings.VisualTargetNavigationEnabled;
         _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
         _aiAutoVisionScan.Checked = _settings.AiAutoVisionScan;
 
@@ -781,11 +829,20 @@ public sealed class MainForm : Form
 
         var id = _map.Text;
         var bitmap = await _mapAssets.GetBitmapAsync(id);
+        var visualMemory =
+            _visualMapMemory.Get(id);
+        _lastMapRegistration =
+            visualMemory.LastRegistration;
+        _lastVisualTargetDetection = null;
         _currentRoadGraph = _roadGraphs.Load(id);
         _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
         _mapCanvas.SetGuidance(null);
+        _mapCanvas.SetVisualMapState(
+            _lastMapRegistration,
+            visualMemory.LastVisualTarget,
+            visualMemory.LastTargetConfidence);
         _guidance.Reset(null);
         UpdateHazards();
         UpdateVisionEvidence();
@@ -958,13 +1015,255 @@ public sealed class MainForm : Form
 
     private async Task ReadTargetOnceAsync()
     {
-        var point = await ReadRegionAsync(_settings.TargetRegion);
-        if (point is not MapPoint value) return;
+        var point =
+            await ReadBestTargetAsync(
+                silent: false);
+
+        if (point is not MapPoint value)
+            return;
 
         _pendingTargetPoint = null;
         _pendingTargetSamples = 0;
         SetTarget(value);
         await PlanRouteAsync(false);
+    }
+
+    private async Task<MapPoint?> ReadBestTargetAsync(
+        bool silent)
+    {
+        string visualError = "";
+
+        if (_settings.VisualTargetNavigationEnabled &&
+            _settings.VisionMapRegion.IsValid &&
+            _settings.TargetMarkerProfile?.IsValid == true)
+        {
+            var visual =
+                await ReadVisualTargetAsync(
+                    silent: true);
+
+            if (visual.Success &&
+                visual.Confidence >=
+                    _settings.VisualTargetMinConfidence)
+                return visual.Point;
+
+            visualError =
+                visual.Error;
+        }
+
+        if (_settings.TargetRegion.IsValid)
+        {
+            var ocr =
+                await ReadRegionAsync(
+                    _settings.TargetRegion,
+                    silent: true);
+
+            if (ocr is MapPoint point)
+                return point;
+        }
+
+        if (!silent)
+        {
+            _routeSummary.Text =
+                string.IsNullOrWhiteSpace(
+                    visualError)
+                    ? "目标识别失败：视觉目标和坐标 OCR 都没有获得有效目标。"
+                    : "目标识别失败：" +
+                      visualError +
+                      "；坐标 OCR 也未获得有效目标。";
+        }
+
+        return null;
+    }
+
+    private async Task<VisualTargetDetection> ReadVisualTargetAsync(
+        bool silent,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            return new VisualTargetDetection
+            {
+                Error =
+                    "尚未框选游戏地图视觉区域。"
+            };
+        }
+
+        if (_settings.TargetMarkerProfile?.IsValid != true)
+        {
+            return new VisualTargetDetection
+            {
+                Error =
+                    "尚未校准目标标记图标。"
+            };
+        }
+
+        try
+        {
+            using var screenshot =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            var mapId =
+                _map.Text;
+
+            var memory =
+                _visualMapMemory.Get(
+                    mapId);
+
+            var hint =
+                _lastMapRegistration?.IsValid == true
+                    ? _lastMapRegistration
+                    : memory.LastRegistration;
+
+            var registration =
+                await _mapVisualRegistration.RegisterAsync(
+                    mapId,
+                    screenshot,
+                    hint,
+                    cancellationToken);
+
+            if (registration?.IsValid != true ||
+                registration.Confidence <
+                    _settings.VisualMapMinRegistrationConfidence)
+            {
+                _visualMapMemory.RecordRegistrationFailure(
+                    mapId);
+
+                var error =
+                    registration == null
+                        ? "本地地图配准失败。"
+                        : "地图配准置信度不足：" +
+                          Math.Round(
+                              registration.Confidence *
+                              100)
+                              .ToString("F0") +
+                          "%";
+
+                if (!silent)
+                    _routeSummary.Text =
+                        error;
+
+                return new VisualTargetDetection
+                {
+                    Error = error,
+                    RegistrationConfidence =
+                        registration?.Confidence ?? 0
+                };
+            }
+
+            _lastMapRegistration =
+                registration;
+
+            _visualMapMemory.RecordRegistration(
+                mapId,
+                registration);
+
+            MapPoint? expected =
+                TryPoint(
+                    _targetX,
+                    _targetY,
+                    out var currentTarget)
+                    ? currentTarget
+                    : memory.LastVisualTarget;
+
+            var detection =
+                await Task.Run(
+                    () =>
+                        _targetMarkerDetector.Detect(
+                            screenshot,
+                            registration,
+                            _settings.TargetMarkerProfile,
+                            expected),
+                    cancellationToken);
+
+            if (detection.Success &&
+                detection.Confidence >=
+                    _settings.VisualTargetMinConfidence)
+            {
+                _lastVisualTargetDetection =
+                    detection;
+
+                _visualMapMemory.RecordTarget(
+                    mapId,
+                    detection.Point,
+                    detection.Confidence);
+
+                _mapCanvas.SetVisualMapState(
+                    registration,
+                    detection.Point,
+                    detection.Confidence);
+
+                if (!silent)
+                {
+                    _routeSummary.Text =
+                        "视觉目标：" +
+                        detection.Point +
+                        " · 目标置信 " +
+                        Math.Round(
+                            detection.Confidence *
+                            100)
+                            .ToString("F0") +
+                        "% · 配准 " +
+                        Math.Round(
+                            registration.Confidence *
+                            100)
+                            .ToString("F0") +
+                        "%";
+                }
+
+                return detection;
+            }
+
+            detection.Success = false;
+
+            if (string.IsNullOrWhiteSpace(
+                    detection.Error))
+            {
+                detection.Error =
+                    "目标图标候选置信度不足：" +
+                    Math.Round(
+                        detection.Confidence *
+                        100)
+                        .ToString("F0") +
+                    "%";
+            }
+
+            _mapCanvas.SetVisualMapState(
+                registration,
+                null,
+                0);
+
+            if (!silent)
+                _routeSummary.Text =
+                    detection.Error;
+
+            return detection;
+        }
+        catch (OperationCanceledException)
+        {
+            return new VisualTargetDetection
+            {
+                Error =
+                    "视觉目标识别已取消。"
+            };
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+            {
+                _routeSummary.Text =
+                    "视觉目标识别失败：" +
+                    ex.Message;
+            }
+
+            return new VisualTargetDetection
+            {
+                Error =
+                    "视觉目标识别失败：" +
+                    ex.Message
+            };
+        }
     }
 
     private async Task<MapPoint?> ReadRegionAsync(
@@ -1098,17 +1397,34 @@ public sealed class MainForm : Form
                     return;
                 }
         
+                var targetReadAvailable =
+                    (
+                        _settings.VisualTargetNavigationEnabled &&
+                        _settings.VisionMapRegion.IsValid &&
+                        _settings.TargetMarkerProfile?.IsValid == true
+                    ) ||
+                    _settings.TargetRegion.IsValid;
+
+                var targetScanSeconds =
+                    _settings.VisualTargetNavigationEnabled
+                        ? Math.Clamp(
+                            _settings.VisualTargetScanSeconds,
+                            2,
+                            15)
+                        : 4;
+
                 if (_settings.AutoReadTarget &&
-                    _settings.TargetRegion.IsValid &&
+                    targetReadAvailable &&
                     DateTime.UtcNow - _lastTargetOcrUtc >=
-                        TimeSpan.FromSeconds(4))
+                        TimeSpan.FromSeconds(
+                            targetScanSeconds))
                 {
                     _lastTargetOcrUtc =
                         DateTime.UtcNow;
 
-                    var target = await ReadRegionAsync(
-                        _settings.TargetRegion,
-                        silent: true);
+                    var target =
+                        await ReadBestTargetAsync(
+                            silent: true);
 
                     if (target is MapPoint targetPoint)
                     {
@@ -1128,13 +1444,15 @@ public sealed class MainForm : Form
                         else
                         {
                             if (_pendingTargetPoint is MapPoint pending &&
-                                pending.DistanceMeters(targetPoint) <= 20)
+                                pending.DistanceMeters(
+                                    targetPoint) <= 20)
                             {
                                 _pendingTargetSamples++;
                             }
                             else
                             {
-                                _pendingTargetPoint = targetPoint;
+                                _pendingTargetPoint =
+                                    targetPoint;
                                 _pendingTargetSamples = 1;
                             }
 
@@ -1728,6 +2046,221 @@ public sealed class MainForm : Form
     }
 
 
+    private async Task CalibrateTargetMarkerAsync()
+    {
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            MessageBox.Show(
+                "请先框选“游戏地图视觉区域”。");
+            return;
+        }
+
+        try
+        {
+            using var screenshot =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            using var calibrator =
+                new TargetMarkerCalibrationForm(
+                    screenshot);
+
+            if (calibrator.ShowDialog(this) !=
+                DialogResult.OK)
+                return;
+
+            var profile =
+                _targetMarkerDetector.CreateProfile(
+                    screenshot,
+                    calibrator.SelectedPixel);
+
+            if (!profile.IsValid)
+            {
+                MessageBox.Show(
+                    "目标标记样本颜色特征不足。请确保点击的是地图中的彩色目标标记中心。");
+                return;
+            }
+
+            _settings.TargetMarkerProfile =
+                profile;
+            _settings.VisualTargetNavigationEnabled =
+                true;
+            _settings.Save();
+
+            _visualTargetCheck.Checked = true;
+
+            UpdateCalibrationStatus();
+
+            _routeSummary.Text =
+                "目标图标已校准 · Hue " +
+                profile.HueDeg.ToString("F0") +
+                "° · 容差 ±" +
+                profile.HueToleranceDeg.ToString("F0") +
+                "°";
+
+            await TestVisualRegistrationAsync(
+                silent: true);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                "目标标记校准失败：" +
+                ex.Message);
+        }
+    }
+
+    private async Task TestVisualRegistrationAsync(
+        bool silent = false)
+    {
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            if (!silent)
+            {
+                MessageBox.Show(
+                    "请先框选“游戏地图视觉区域”。");
+            }
+            return;
+        }
+
+        try
+        {
+            using var screenshot =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            var mapId =
+                _map.Text;
+
+            var memory =
+                _visualMapMemory.Get(
+                    mapId);
+
+            var hint =
+                _lastMapRegistration?.IsValid == true
+                    ? _lastMapRegistration
+                    : memory.LastRegistration;
+
+            var registration =
+                await _mapVisualRegistration.RegisterAsync(
+                    mapId,
+                    screenshot,
+                    hint);
+
+            if (registration?.IsValid != true)
+            {
+                _visualMapMemory.RecordRegistrationFailure(
+                    mapId);
+
+                if (!silent)
+                {
+                    MessageBox.Show(
+                        "视觉配准失败。请确认游戏中打开的是当前地图，并尽量只框选地图本体。");
+                }
+
+                UpdateCalibrationStatus();
+                return;
+            }
+
+            var accepted =
+                registration.Confidence >=
+                _settings.VisualMapMinRegistrationConfidence;
+
+            if (accepted)
+            {
+                _lastMapRegistration =
+                    registration;
+
+                _visualMapMemory.RecordRegistration(
+                    mapId,
+                    registration);
+
+                _mapCanvas.SetVisualMapState(
+                    registration,
+                    _lastVisualTargetDetection?.Success == true
+                        ? _lastVisualTargetDetection.Point
+                        : memory.LastVisualTarget,
+                    _lastVisualTargetDetection?.Success == true
+                        ? _lastVisualTargetDetection.Confidence
+                        : memory.LastTargetConfidence);
+            }
+            else
+            {
+                _visualMapMemory.RecordRegistrationFailure(
+                    mapId);
+            }
+
+            UpdateCalibrationStatus();
+
+            var left =
+                registration.Left01 *
+                MapPoint.MapSize;
+
+            var right =
+                (
+                    registration.Left01 +
+                    registration.Width01
+                ) *
+                MapPoint.MapSize;
+
+            var top =
+                (
+                    1 -
+                    registration.Top01
+                ) *
+                MapPoint.MapSize;
+
+            var bottom =
+                (
+                    1 -
+                    registration.Top01 -
+                    registration.Height01
+                ) *
+                MapPoint.MapSize;
+
+            var message =
+                "视觉配准 " +
+                (
+                    accepted
+                        ? "通过"
+                        : "置信度不足"
+                ) +
+                " · " +
+                Math.Round(
+                    registration.Confidence *
+                    100)
+                    .ToString("F0") +
+                "%\r\n" +
+                "视口 X " +
+                left.ToString("F1") +
+                "–" +
+                right.ToString("F1") +
+                " · Y " +
+                bottom.ToString("F1") +
+                "–" +
+                top.ToString("F1");
+
+            _routeSummary.Text =
+                message;
+
+            if (!silent)
+            {
+                MessageBox.Show(
+                    message);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+            {
+                MessageBox.Show(
+                    "视觉配准测试失败：" +
+                    ex.Message);
+            }
+        }
+    }
+
     private void CalibrateVisionMapRegion()
     {
         var client =
@@ -1762,6 +2295,16 @@ public sealed class MainForm : Form
 
         _settings.VisionMapRegion =
             normalized;
+
+        _visualMapMemory.Clear(
+            _map.Text);
+        _lastMapRegistration = null;
+        _lastVisualTargetDetection = null;
+        _mapCanvas.SetVisualMapState(
+            null,
+            null,
+            0);
+
         _settings.Save();
         UpdateCalibrationStatus();
     }
@@ -1967,11 +2510,40 @@ public sealed class MainForm : Form
 
     private void UpdateCalibrationStatus()
     {
+        var mapId =
+            string.IsNullOrWhiteSpace(_map.Text)
+                ? _settings.CurrentMap
+                : _map.Text;
+
+        var memory =
+            _visualMapMemory.Get(mapId);
+
+        var marker =
+            _settings.TargetMarkerProfile?.IsValid == true
+                ? "已校准 · Hue " +
+                  _settings.TargetMarkerProfile.HueDeg.ToString("F0") +
+                  "°"
+                : "未校准";
+
+        var registration =
+            memory.LastRegistration?.IsValid == true
+                ? "已记忆 · " +
+                  Math.Round(
+                      memory.LastRegistration.Confidence *
+                      100)
+                      .ToString("F0") +
+                  "%"
+                : "无";
+
         _calibrationStatus.Text =
             "窗口：" + _settings.GameWindowTitleContains + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
-            "目标区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
-            "AI地图视觉区域：" + FormatRegion(_settings.VisionMapRegion);
+            "目标坐标 OCR 区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
+            "游戏地图视觉区域：" + FormatRegion(_settings.VisionMapRegion) + "\r\n" +
+            "目标图标：" + marker + "\r\n" +
+            "当前地图视觉记忆：" + registration +
+            " · 成功 " + memory.SuccessfulRegistrations +
+            " / 失败 " + memory.FailedRegistrations;
     }
 
     private static string FormatRegion(NormalizedRegion region)

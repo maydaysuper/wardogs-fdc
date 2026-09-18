@@ -1,3 +1,4 @@
+using System.Drawing;
 using WardogsNavigator.Services;
 using Xunit;
 
@@ -1246,6 +1247,387 @@ public sealed class CoreTests
         Assert.DoesNotContain(
             "zig-b",
             fastest.EdgeIds);
+    }
+
+    [Fact]
+    public void MapViewportRegistration_ConvertsScreenPixelToWorld()
+    {
+        var registration =
+            new MapViewportRegistration
+            {
+                MapId = "test",
+                Left01 = 0.25,
+                Top01 = 0.20,
+                Width01 = 0.50,
+                Height01 = 0.40,
+                Confidence = 0.90
+            };
+
+        var point =
+            registration.ScreenPixelToWorld(
+                50,
+                50,
+                101,
+                101);
+
+        Assert.InRange(
+            point.X,
+            81.8,
+            82.1);
+
+        Assert.InRange(
+            point.Y,
+            97.8,
+            98.5);
+
+        var pixel =
+            registration.WorldToScreenPixel(
+                point,
+                101,
+                101);
+
+        Assert.InRange(
+            pixel.X,
+            49.5f,
+            50.5f);
+
+        Assert.InRange(
+            pixel.Y,
+            49.5f,
+            50.5f);
+    }
+
+    [Fact]
+    public void TargetMarkerDetector_CalibratesAndFindsColoredMarker()
+    {
+        using var image =
+            new Bitmap(
+                420,
+                420);
+
+        using (var g =
+               Graphics.FromImage(image))
+        {
+            g.Clear(
+                Color.FromArgb(
+                    48,
+                    55,
+                    52));
+
+            using var road =
+                new Pen(
+                    Color.LightGray,
+                    4);
+
+            g.DrawLine(
+                road,
+                20,
+                350,
+                390,
+                80);
+
+            using var distractor =
+                new SolidBrush(
+                    Color.Gold);
+
+            g.FillEllipse(
+                distractor,
+                45,
+                45,
+                18,
+                18);
+
+            using var target =
+                new SolidBrush(
+                    Color.FromArgb(
+                        240,
+                        40,
+                        70));
+
+            g.FillEllipse(
+                target,
+                290,
+                105,
+                22,
+                22);
+        }
+
+        var detector =
+            new TargetMarkerDetector();
+
+        var profile =
+            detector.CreateProfile(
+                image,
+                new Point(
+                    301,
+                    116));
+
+        Assert.True(
+            profile.IsValid);
+
+        var registration =
+            new MapViewportRegistration
+            {
+                MapId = "test",
+                Left01 = 0,
+                Top01 = 0,
+                Width01 = 1,
+                Height01 = 1,
+                Confidence = 0.95
+            };
+
+        var detection =
+            detector.Detect(
+                image,
+                registration,
+                profile);
+
+        Assert.True(
+            detection.Success);
+
+        Assert.True(
+            detection.Confidence > 0.50);
+
+        var expected =
+            registration.ScreenPixelToWorld(
+                301,
+                116,
+                image.Width,
+                image.Height);
+
+        Assert.True(
+            detection.Point.DistanceMeters(
+                expected) <
+            80);
+    }
+
+    [Fact]
+    public void NavigationMapMemory_PersistsRegistrationAndTarget()
+    {
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store =
+                new NavigationMapMemoryStore(
+                    temp);
+
+            var registration =
+                new MapViewportRegistration
+                {
+                    MapId = "bakurani",
+                    Left01 = 0.20,
+                    Top01 = 0.15,
+                    Width01 = 0.55,
+                    Height01 = 0.55,
+                    Confidence = 0.84
+                };
+
+            store.RecordRegistration(
+                "bakurani",
+                registration);
+
+            store.RecordTarget(
+                "bakurani",
+                new MapPoint(
+                    70,
+                    88),
+                0.91);
+
+            var reloaded =
+                new NavigationMapMemoryStore(
+                    temp);
+
+            var memory =
+                reloaded.Get(
+                    "BAKURANI");
+
+            Assert.NotNull(
+                memory.LastRegistration);
+
+            Assert.Equal(
+                1,
+                memory.SuccessfulRegistrations);
+
+            Assert.InRange(
+                memory.LastRegistration!.Left01,
+                0.19,
+                0.21);
+
+            Assert.True(
+                memory.LastVisualTarget.HasValue);
+
+            Assert.True(
+                memory.LastVisualTarget!.Value
+                    .DistanceMeters(
+                        new MapPoint(
+                            70,
+                            88)) <
+                1);
+
+            Assert.InRange(
+                memory.LastTargetConfidence,
+                0.90,
+                0.92);
+        }
+        finally
+        {
+            Directory.Delete(
+                temp,
+                true);
+        }
+    }
+
+    [Fact]
+    public void VisualRegistration_FindsSyntheticMapCrop()
+    {
+        using var baseMap =
+            new Bitmap(
+                512,
+                512);
+
+        using (var g =
+               Graphics.FromImage(baseMap))
+        {
+            g.Clear(
+                Color.FromArgb(
+                    35,
+                    42,
+                    38));
+
+            using var road1 =
+                new Pen(
+                    Color.FromArgb(
+                        210,
+                        205,
+                        190),
+                    7);
+
+            using var road2 =
+                new Pen(
+                    Color.FromArgb(
+                        100,
+                        160,
+                        120),
+                    5);
+
+            g.DrawLine(
+                road1,
+                20,
+                430,
+                480,
+                70);
+
+            g.DrawLine(
+                road1,
+                80,
+                60,
+                430,
+                470);
+
+            g.DrawEllipse(
+                road2,
+                130,
+                110,
+                220,
+                170);
+
+            g.DrawRectangle(
+                road2,
+                285,
+                55,
+                120,
+                95);
+
+            using var dot =
+                new SolidBrush(
+                    Color.White);
+
+            g.FillEllipse(
+                dot,
+                330,
+                250,
+                25,
+                25);
+
+            g.FillRectangle(
+                dot,
+                175,
+                300,
+                34,
+                18);
+        }
+
+        var cropRect =
+            new Rectangle(
+                128,
+                96,
+                256,
+                256);
+
+        using var screenshot =
+            new Bitmap(
+                420,
+                420);
+
+        using (var g =
+               Graphics.FromImage(screenshot))
+        {
+            g.DrawImage(
+                baseMap,
+                new Rectangle(
+                    0,
+                    0,
+                    screenshot.Width,
+                    screenshot.Height),
+                cropRect,
+                GraphicsUnit.Pixel);
+        }
+
+        using var assets =
+            new MapAssetService();
+
+        var service =
+            new MapVisualRegistrationService(
+                assets);
+
+        var registration =
+            service.RegisterLocal(
+                "test",
+                baseMap,
+                screenshot);
+
+        Assert.NotNull(
+            registration);
+
+        Assert.True(
+            registration!.Confidence >
+            0.35);
+
+        Assert.InRange(
+            registration.Left01,
+            0.16,
+            0.34);
+
+        Assert.InRange(
+            registration.Top01,
+            0.10,
+            0.30);
+
+        Assert.InRange(
+            registration.Width01,
+            0.40,
+            0.62);
+
+        Assert.InRange(
+            registration.Height01,
+            0.40,
+            0.62);
     }
 
     [Fact]
