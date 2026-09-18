@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>WardogsNavigator</AssemblyName>
     <RootNamespace>WardogsNavigator</RootNamespace>
-    <Version>0.7.0</Version>
+    <Version>0.8.0</Version>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
