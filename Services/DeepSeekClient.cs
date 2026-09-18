@@ -48,6 +48,61 @@ public sealed class DeepSeekClient
         return content?.Trim() ?? "";
     }
 
+    public async Task<T> AskJsonAsync<T>(
+        string apiKey,
+        string model,
+        string systemPrompt,
+        string userPrompt,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey))
+            throw new InvalidOperationException("未设置 DeepSeek API Key。");
+
+        var payload = new
+        {
+            model = string.IsNullOrWhiteSpace(model) ? "deepseek-flash" : model,
+            messages = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = userPrompt }
+            },
+            response_format = new { type = "json_object" },
+            max_tokens = 1800,
+            stream = false
+        };
+
+        using var req = new HttpRequestMessage(HttpMethod.Post, "chat/completions");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(payload),
+            Encoding.UTF8,
+            "application/json");
+
+        using var resp = await _http.SendAsync(req, cancellationToken);
+        var body = await resp.Content.ReadAsStringAsync(cancellationToken);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException(
+                "DeepSeek HTTP " + (int)resp.StatusCode + ": " + Trim(body, 300));
+
+        using var doc = JsonDocument.Parse(body);
+        var content = doc.RootElement
+            .GetProperty("choices")[0]
+            .GetProperty("message")
+            .GetProperty("content")
+            .GetString();
+
+        if (string.IsNullOrWhiteSpace(content))
+            throw new InvalidOperationException("DeepSeek JSON 输出为空。");
+
+        return JsonSerializer.Deserialize<T>(
+            content,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            })
+            ?? throw new InvalidOperationException("DeepSeek JSON 无法解析。");
+    }
+
     public Task<string> TestAsync(string apiKey, string model, CancellationToken cancellationToken = default) =>
         AskAsync(apiKey, model, "只进行连接测试。", "只回复：连接成功", cancellationToken);
 
