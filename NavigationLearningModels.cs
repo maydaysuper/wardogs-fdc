@@ -32,6 +32,19 @@ public sealed class NavigationHazard
     public string Source { get; set; } = "manual";
 }
 
+public sealed class EdgeTravelObservation
+{
+    public string EdgeId { get; set; } = "";
+    public int Samples { get; set; }
+    public double DistanceKm { get; set; }
+    public double Seconds { get; set; }
+    public double MaxDeviationMeters { get; set; }
+    public double ObservedSpeedKmh =>
+        Seconds > 0.5
+            ? DistanceKm / (Seconds / 3600.0)
+            : 0;
+}
+
 public sealed class NavigationExperience
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -47,6 +60,7 @@ public sealed class NavigationExperience
     public int Replans { get; set; }
     public double MaxDeviationMeters { get; set; }
     public List<string> EdgeIds { get; set; } = new();
+    public List<EdgeTravelObservation> EdgeObservations { get; set; } = new();
 }
 
 public sealed class AiRoadSuggestion
