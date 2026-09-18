@@ -67,6 +67,65 @@ public static class VehicleRoutingProfileService
         };
     }
 
+    public static VehicleRoutingProfile ForVehicleId(
+        string vehicleId,
+        string label = "")
+    {
+        var id = string.IsNullOrWhiteSpace(vehicleId)
+            ? "generic-ground"
+            : vehicleId;
+
+        return id.ToLowerInvariant() switch
+        {
+            "bobcat" => new VehicleRoutingProfile
+            {
+                VehicleId = id,
+                Label = string.IsNullOrWhiteSpace(label) ? id : label,
+                PrimaryFactor = 0.92,
+                SecondaryFactor = 0.90,
+                TrackFactor = 0.82,
+                BridgeFactor = 0.90,
+                RiskTolerance = 0.72
+            },
+            "dune-buggy" => new VehicleRoutingProfile
+            {
+                VehicleId = id,
+                Label = string.IsNullOrWhiteSpace(label) ? id : label,
+                PrimaryFactor = 1.00,
+                SecondaryFactor = 0.88,
+                TrackFactor = 0.82,
+                BridgeFactor = 0.92,
+                RiskTolerance = 0.70
+            },
+            "kodiak" => new VehicleRoutingProfile
+            {
+                VehicleId = id,
+                Label = string.IsNullOrWhiteSpace(label) ? id : label,
+                PrimaryFactor = 1.00,
+                SecondaryFactor = 0.84,
+                TrackFactor = 0.68,
+                BridgeFactor = 0.94,
+                RiskTolerance = 0.62
+            },
+            "ural" or "ural-defender" or "ural-defender-m249" =>
+                new VehicleRoutingProfile
+                {
+                    VehicleId = id,
+                    Label = string.IsNullOrWhiteSpace(label) ? id : label,
+                    PrimaryFactor = 0.96,
+                    SecondaryFactor = 0.75,
+                    TrackFactor = 0.52,
+                    BridgeFactor = 0.78,
+                    RiskTolerance = 0.46
+                },
+            _ => Generic(
+                id,
+                string.IsNullOrWhiteSpace(label)
+                    ? id
+                    : label)
+        };
+    }
+
     public static VehicleRoutingProfile Generic(
         string vehicleId = "generic-ground",
         string label = "通用地面车辆") =>
