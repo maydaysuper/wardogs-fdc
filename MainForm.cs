@@ -736,13 +736,23 @@ public sealed class MainForm : Form
             ComboBoxStyle.DropDownList;
         _captureBackend.Width = 180;
         _captureBackend.Items.AddRange(
-            Enum.GetNames<CaptureBackendMode>());
+            new object[]
+            {
+                "自动",
+                "屏幕拷贝",
+                "PrintWindow兼容"
+            });
 
         _performanceMode.DropDownStyle =
             ComboBoxStyle.DropDownList;
         _performanceMode.Width = 180;
         _performanceMode.Items.AddRange(
-            Enum.GetNames<RuntimePerformanceMode>());
+            new object[]
+            {
+                "低占用",
+                "平衡",
+                "实时"
+            });
 
         var captureRow = new FlowLayoutPanel
         {
@@ -763,21 +773,13 @@ public sealed class MainForm : Form
             _settings.CaptureWindowTitleContains =
                 _captureTitle.Text.Trim();
 
-            if (Enum.TryParse<CaptureBackendMode>(
-                    _captureBackend.Text,
-                    out var backend))
-            {
-                _settings.CaptureBackend =
-                    backend;
-            }
+            _settings.CaptureBackend =
+                CaptureBackendFromUi(
+                    _captureBackend.Text);
 
-            if (Enum.TryParse<RuntimePerformanceMode>(
-                    _performanceMode.Text,
-                    out var performance))
-            {
-                _settings.PerformanceMode =
-                    performance;
-            }
+            _settings.PerformanceMode =
+                PerformanceModeFromUi(
+                    _performanceMode.Text);
 
             _capture.InvalidateWindowCache();
             ApplyPerformanceMode();
@@ -947,14 +949,16 @@ public sealed class MainForm : Form
             _settings.CaptureWindowTitleContains;
 
         _captureBackend.SelectedItem =
-            _settings.CaptureBackend.ToString();
+            CaptureBackendLabel(
+                _settings.CaptureBackend);
         if (_captureBackend.SelectedIndex < 0)
             _captureBackend.SelectedIndex = 0;
 
         _performanceMode.SelectedItem =
-            _settings.PerformanceMode.ToString();
+            PerformanceModeLabel(
+                _settings.PerformanceMode);
         if (_performanceMode.SelectedIndex < 0)
-            _performanceMode.SelectedIndex = 0;
+            _performanceMode.SelectedIndex = 1;
 
         _apiKey.Text = SecretStore.LoadDeepSeekKey();
 
@@ -2832,6 +2836,54 @@ public sealed class MainForm : Form
             " · 成功 " + memory.SuccessfulRegistrations +
             " / 失败 " + memory.FailedRegistrations;
     }
+
+    private static string CaptureBackendLabel(
+        CaptureBackendMode mode) =>
+        mode switch
+        {
+            CaptureBackendMode.ScreenCopy =>
+                "屏幕拷贝",
+            CaptureBackendMode.PrintWindow =>
+                "PrintWindow兼容",
+            _ =>
+                "自动"
+        };
+
+    private static CaptureBackendMode CaptureBackendFromUi(
+        string text) =>
+        text switch
+        {
+            "屏幕拷贝" =>
+                CaptureBackendMode.ScreenCopy,
+            "PrintWindow兼容" =>
+                CaptureBackendMode.PrintWindow,
+            _ =>
+                CaptureBackendMode.Auto
+        };
+
+    private static string PerformanceModeLabel(
+        RuntimePerformanceMode mode) =>
+        mode switch
+        {
+            RuntimePerformanceMode.LowPower =>
+                "低占用",
+            RuntimePerformanceMode.Realtime =>
+                "实时",
+            _ =>
+                "平衡"
+        };
+
+    private static RuntimePerformanceMode PerformanceModeFromUi(
+        string text) =>
+        text switch
+        {
+            "低占用" =>
+                RuntimePerformanceMode.LowPower,
+            "实时" =>
+                RuntimePerformanceMode.Realtime,
+            _ =>
+                RuntimePerformanceMode.Balanced
+        };
 
     private string CaptureSourceTitle()
     {
