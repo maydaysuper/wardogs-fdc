@@ -65,6 +65,7 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
     private AiNavigationLearningReport? _lastAiLearningReport;
+    private bool _aiLearningBusy;
 
     public MainForm()
     {
@@ -991,12 +992,19 @@ public sealed class MainForm : Form
                   "，3趟预计净利 $" + _selectedEconomicPlan.SessionNet.ToString("F0") +
                   "，$" + _selectedEconomicPlan.SessionPerMinute.ToString("F1") + "/min。";
 
+            var navVehicle = SelectedNavigationVehicle();
+            var hazards = _hazards.GetActive(_map.Text);
+            var learning = _experiences.Snapshot(_map.Text, 10);
+
             var routeText = _route == null
                 ? "当前没有路线。"
-                : "路线：" + _route.Preference +
+                : "导航车辆：" + (navVehicle?.NameZh ?? "通用地面车辆") +
+                  "；路线：" + _route.Preference +
                   "，" + _route.DistanceKm.ToString("F2") + "km" +
                   "，ETA " + _route.EstimatedMinutes.ToString("F1") + "min" +
-                  "，来源 " + _route.Source + "。";
+                  "，来源 " + _route.Source +
+                  "，当前临时危险区 " + hazards.Count +
+                  "，已有导航学习样本 " + learning.ExperienceCount + "。";
 
             _aiOutput.Text = "DeepSeek 分析中…";
             _aiOutput.Text = await _ai.AskAsync(
@@ -1015,6 +1023,11 @@ public sealed class MainForm : Form
 
     private async Task AnalyzeNavigationLearningAsync(bool autoApply, bool silent)
     {
+        if (_aiLearningBusy)
+            return;
+
+        _aiLearningBusy = true;
+
         try
         {
             var snapshot = _experiences.Snapshot(_map.Text, 30);
@@ -1087,6 +1100,10 @@ public sealed class MainForm : Form
         {
             if (!silent)
                 _aiOutput.Text = "AI 导航学习失败：" + ex.Message;
+        }
+        finally
+        {
+            _aiLearningBusy = false;
         }
     }
 
