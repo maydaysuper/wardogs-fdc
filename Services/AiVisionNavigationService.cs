@@ -76,7 +76,9 @@ public sealed class AiVisionNavigationService
 
         var images = new[]
         {
-            ToPng(gameMapScreenshot),
+            ToPngScaled(
+                gameMapScreenshot,
+                1600),
             ToPng(reference)
         };
 
@@ -320,6 +322,51 @@ public sealed class AiVisionNavigationService
                 (MapPoint.MapSize - point.Y) /
                 MapPoint.MapSize *
                 (size - 1)));
+
+    private static byte[] ToPngScaled(
+        Bitmap bitmap,
+        int maxDimension)
+    {
+        if (bitmap.Width <= maxDimension &&
+            bitmap.Height <= maxDimension)
+            return ToPng(bitmap);
+
+        var scale = Math.Min(
+            maxDimension / (double)bitmap.Width,
+            maxDimension / (double)bitmap.Height);
+
+        var width = Math.Max(
+            1,
+            (int)Math.Round(
+                bitmap.Width * scale));
+
+        var height = Math.Max(
+            1,
+            (int)Math.Round(
+                bitmap.Height * scale));
+
+        using var resized =
+            new Bitmap(
+                width,
+                height,
+                PixelFormat.Format24bppRgb);
+
+        using (var g =
+               Graphics.FromImage(resized))
+        {
+            g.InterpolationMode =
+                InterpolationMode.HighQualityBicubic;
+            g.DrawImage(
+                bitmap,
+                new Rectangle(
+                    0,
+                    0,
+                    width,
+                    height));
+        }
+
+        return ToPng(resized);
+    }
 
     private static byte[] ToPng(Bitmap bitmap)
     {
