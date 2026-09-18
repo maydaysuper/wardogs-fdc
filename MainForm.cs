@@ -1459,6 +1459,23 @@ public sealed class MainForm : Form
 
         _experiences.Append(experience);
 
+        var provenEdges = experience.EdgeObservations
+            .Where(x =>
+                x.Samples >= 3 &&
+                x.DistanceKm >= 0.03 &&
+                x.MaxDeviationMeters <= 90)
+            .Select(x => x.EdgeId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (provenEdges.Count > 0)
+        {
+            _visionEvidence.ClearEdges(
+                experience.MapId,
+                provenEdges);
+            UpdateVisionEvidence();
+        }
+
         var changed = _roadGraphs.RecordNavigationExperience(
             _currentRoadGraph,
             experience);
