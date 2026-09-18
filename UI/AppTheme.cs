@@ -12,10 +12,12 @@ public static class AppTheme
     public static readonly Color AccentBlue = Color.FromArgb(92, 175, 255);
     public static readonly Color Text = Color.FromArgb(232, 236, 242);
     public static readonly Color Muted = Color.FromArgb(158, 168, 184);
+    private static readonly Font UiFont =
+        new("Microsoft YaHei UI", 9.5f);
 
     public static void Apply(Control root)
     {
-        root.Font = new Font("Microsoft YaHei UI", 9.5f);
+        root.Font = UiFont;
 
         foreach (Control control in root.Controls)
         {
