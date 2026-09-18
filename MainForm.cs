@@ -499,6 +499,14 @@ public sealed class MainForm : Form
 
     private async Task SwitchMapAsync()
     {
+        if (_traceLearning.IsRecording)
+        {
+            _traceLearning.Cancel();
+            _roadLearnButton.Text = "开始实车学习";
+            if (!_live)
+                _liveTimer.Stop();
+        }
+
         var id = _map.Text;
         var bitmap = await _mapAssets.GetBitmapAsync(id);
         _currentRoadGraph = _roadGraphs.Load(id);
