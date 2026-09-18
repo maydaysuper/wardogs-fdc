@@ -290,8 +290,21 @@ public sealed class RoadGraphRouter
 
         var speedFactor = vehicleProfile.FactorFor(edge.Class);
 
-        if (edge.VehicleSpeedMultipliers.TryGetValue(vehicleProfile.VehicleId, out var learnedMultiplier))
-            speedFactor *= Math.Clamp(learnedMultiplier, 0.35, 1.35);
+        if (edge.LocalVehicleSpeedMultipliers.TryGetValue(
+                vehicleProfile.VehicleId,
+                out var localLearnedMultiplier))
+            speedFactor *= Math.Clamp(
+                localLearnedMultiplier,
+                0.55,
+                1.25);
+
+        if (edge.VehicleSpeedMultipliers.TryGetValue(
+                vehicleProfile.VehicleId,
+                out var learnedMultiplier))
+            speedFactor *= Math.Clamp(
+                learnedMultiplier,
+                0.55,
+                1.25);
 
         var hazardPenalty = hazards
             .Where(h => h.ExpiresUtc > DateTime.UtcNow)
@@ -463,8 +476,21 @@ public sealed class RoadGraphRouter
         var factors = distinct.Select(edge =>
         {
             var factor = profile.FactorFor(edge.Class);
-            if (edge.VehicleSpeedMultipliers.TryGetValue(profile.VehicleId, out var learned))
-                factor *= Math.Clamp(learned, 0.35, 1.35);
+            if (edge.LocalVehicleSpeedMultipliers.TryGetValue(
+                    profile.VehicleId,
+                    out var localLearned))
+                factor *= Math.Clamp(
+                    localLearned,
+                    0.55,
+                    1.25);
+
+            if (edge.VehicleSpeedMultipliers.TryGetValue(
+                    profile.VehicleId,
+                    out var learned))
+                factor *= Math.Clamp(
+                    learned,
+                    0.55,
+                    1.25);
             return Math.Clamp(factor, 0.25, 1.35);
         });
 
