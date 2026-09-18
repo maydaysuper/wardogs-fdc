@@ -1168,17 +1168,21 @@ public sealed class MainForm : Form
             _mapCanvas.SetGuidance(cue);
             UpdateMapState();
 
-            var predictionToken =
-                _predictionCts.Token;
+            if (_settings.PerformanceMode !=
+                RuntimePerformanceMode.LowPower)
+            {
+                var predictionToken =
+                    _predictionCts.Token;
 
-            _ =
-                _routes.WarmPredictedReroutesAsync(
-                    _map.Text,
-                    _route,
-                    preference,
-                    speed,
-                    profile,
-                    predictionToken);
+                _ =
+                    _routes.WarmPredictedReroutesAsync(
+                        _map.Text,
+                        _route,
+                        preference,
+                        speed,
+                        profile,
+                        predictionToken);
+            }
 
             if (speak && _settings.SpeakNavigation)
             {
@@ -2148,9 +2152,14 @@ public sealed class MainForm : Form
                     snapshot.ExperienceCount +
                     " 条导航经验…";
 
+            var learningModel =
+                autoApply
+                    ? "deepseek-flash"
+                    : _model.Text;
+
             var report = await _aiNavigationLearning.AnalyzeAsync(
                 _apiKey.Text,
-                _model.Text,
+                learningModel,
                 _map.Text,
                 _currentRoadGraph,
                 snapshot);
