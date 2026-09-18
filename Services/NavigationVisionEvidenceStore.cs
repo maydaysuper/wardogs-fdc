@@ -95,6 +95,32 @@ public sealed class NavigationVisionEvidenceStore
         return accepted.Count;
     }
 
+    public int ClearEdges(
+        string mapId,
+        IEnumerable<string> edgeIds)
+    {
+        var ids = edgeIds.ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+
+        if (ids.Count == 0)
+            return 0;
+
+        lock (_sync)
+        {
+            var all = LoadAll();
+            var removed = all.RemoveAll(x =>
+                x.MapId.Equals(
+                    mapId,
+                    StringComparison.OrdinalIgnoreCase) &&
+                ids.Contains(x.EdgeId));
+
+            if (removed > 0)
+                SaveAll(all);
+
+            return removed;
+        }
+    }
+
     public int ClearMap(string mapId)
     {
         lock (_sync)
