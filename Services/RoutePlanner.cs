@@ -57,7 +57,8 @@ public sealed class RoutePlanner
                 end,
                 preference,
                 vehicleProfile,
-                activeHazards);
+                activeHazards,
+                speedKmh);
 
             if (graphRoute != null &&
                 graphRoute.Points.Count >= 2 &&
@@ -69,9 +70,7 @@ public sealed class RoutePlanner
                     Preference = preference,
                     Points = graphRoute.Points,
                     DistanceKm = graphRoute.DistanceKm,
-                    EstimatedMinutes = speedKmh > 1
-                        ? graphRoute.DistanceKm / speedKmh * 60.0
-                        : 0,
+                    EstimatedMinutes = graphRoute.EstimatedMinutes,
                     Source =
                         (graphRoute.Confidence >= 0.50
                             ? "road-graph verified "
