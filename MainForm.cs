@@ -1133,7 +1133,17 @@ public sealed class MainForm : Form
             experience);
 
         if (changed > 0)
-            SaveRoadGraph();
+        {
+            _roadGraphs.Save(_currentRoadGraph);
+
+            if (_currentRoadGraph.MapId.Equals(
+                    _map.Text,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _currentRoadGraph = _roadGraphs.Load(_map.Text);
+                _mapCanvas.SetRoadGraph(_currentRoadGraph);
+            }
+        }
     }
 
     private VehicleSpec? SelectedNavigationVehicle()
