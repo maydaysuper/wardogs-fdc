@@ -537,6 +537,66 @@ public sealed class MainForm : Form
         learnRow.Controls.Add(clearLearning);
         p.Controls.Add(learnRow);
 
+        p.Controls.Add(Header("AI 视觉导航"));
+
+        _aiAutoVisionScan.Text = "实时导航时每 3 分钟自动视觉检查（实验）";
+        _aiAutoVisionScan.AutoSize = true;
+        _aiAutoVisionScan.ForeColor = Color.Gainsboro;
+        _aiAutoVisionScan.CheckedChanged += (_, _) =>
+        {
+            _settings.AiAutoVisionScan = _aiAutoVisionScan.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_aiAutoVisionScan);
+
+        var visionRow = new FlowLayoutPanel
+        {
+            Width = 420,
+            Height = 76,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        var analyzeVision = Btn("AI视觉检查当前路线");
+        analyzeVision.Click += async (_, _) =>
+            await AnalyzeVisionRouteAsync(
+                autoApply: false,
+                silent: false);
+
+        var applyVision = Btn("应用视觉风险并重算");
+        applyVision.Click += async (_, _) =>
+        {
+            ApplyLastVisionEvidence(0.80);
+            await PlanRouteAsync(false);
+        };
+
+        var clearVision = Btn("清除视觉风险");
+        clearVision.Click += async (_, _) =>
+        {
+            var removed = _visionEvidence.ClearMap(_map.Text);
+            _lastVisionReport = null;
+            UpdateVisionEvidence();
+            _aiOutput.Text =
+                "已清除当前地图 " +
+                removed +
+                " 条临时视觉证据。";
+            await PlanRouteAsync(false);
+        };
+
+        visionRow.Controls.Add(analyzeVision);
+        visionRow.Controls.Add(applyVision);
+        visionRow.Controls.Add(clearVision);
+        p.Controls.Add(visionRow);
+
+        p.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Width = 400,
+            Height = 72,
+            ForeColor = Color.Silver,
+            Text =
+                "视觉检查固定使用 deepseek-flash。只上传你在“校准”页框选的游戏地图区域；程序参考图只包含当前地图和当前路线。视觉风险默认 8 分钟后过期。"
+        });
+
         _aiOutput.Multiline = true;
         _aiOutput.ScrollBars = ScrollBars.Vertical;
         _aiOutput.Width = 400;
@@ -572,11 +632,15 @@ public sealed class MainForm : Form
         var target = Btn("框选目标坐标区域");
         target.Click += (_, _) => CalibrateRegion(false);
 
+        var visionMap = Btn("框选游戏地图视觉区域");
+        visionMap.Click += (_, _) => CalibrateVisionMapRegion();
+
         p.Controls.Add(self);
         p.Controls.Add(target);
+        p.Controls.Add(visionMap);
 
         _calibrationStatus.Width = 400;
-        _calibrationStatus.Height = 120;
+        _calibrationStatus.Height = 145;
         p.Controls.Add(_calibrationStatus);
 
         p.Controls.Add(new Label
@@ -587,6 +651,7 @@ public sealed class MainForm : Form
             ForeColor = Color.Silver,
             Text =
                 "校准区域按游戏窗口客户区比例保存，因此 1080p / 1440p / 4K 切换后仍可复用。\r\n\r\n" +
+                "“游戏地图视觉区域”只用于 AI 视觉检查；尽量框住地图本体并减少聊天框/菜单等遮挡。\r\n\r\n" +
                 "程序只抓取屏幕像素；不读取进程内存、不注入、不安装驱动。"
         });
 
@@ -659,6 +724,7 @@ public sealed class MainForm : Form
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
 
         _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
+        _aiAutoVisionScan.Checked = _settings.AiAutoVisionScan;
 
         UpdateCalibrationStatus();
     }
@@ -688,6 +754,7 @@ public sealed class MainForm : Form
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
         UpdateHazards();
+        UpdateVisionEvidence();
         UpdateRoadGraphStatus();
         UpdateMapState();
 
@@ -1396,7 +1463,8 @@ public sealed class MainForm : Form
         _calibrationStatus.Text =
             "窗口：" + _settings.GameWindowTitleContains + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
-            "目标区域：" + FormatRegion(_settings.TargetRegion);
+            "目标区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
+            "AI地图视觉区域：" + FormatRegion(_settings.VisionMapRegion);
     }
 
     private static string FormatRegion(NormalizedRegion region)
