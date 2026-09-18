@@ -249,8 +249,19 @@ public sealed class RoadGraphStore
         {
             existing.Verified |= verified;
             if (incrementTraversal) existing.Traversals++;
+
             if (source.Equals("manual", StringComparison.OrdinalIgnoreCase))
+            {
                 existing.Source = "manual";
+            }
+            else if (source.Equals("trace", StringComparison.OrdinalIgnoreCase) &&
+                     existing.Source.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                // A real driven trace upgrades an automatic guess into verified road data.
+                existing.Source = "trace";
+                existing.AutoScore = 0;
+            }
+
             return;
         }
 
