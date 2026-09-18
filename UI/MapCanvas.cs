@@ -10,6 +10,7 @@ public sealed class MapCanvas : Control
     private MapPoint? _current;
     private MapPoint? _target;
     private MapDefinition? _definition;
+    private RoadGraph? _roadGraph;
 
     public event Action<MapPoint>? MapClicked;
 
@@ -32,6 +33,12 @@ public sealed class MapCanvas : Control
         _current = current;
         _target = target;
         _route = route;
+        Invalidate();
+    }
+
+    public void SetRoadGraph(RoadGraph? graph)
+    {
+        _roadGraph = graph;
         Invalidate();
     }
 
@@ -72,6 +79,7 @@ public sealed class MapCanvas : Control
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
+        DrawRoadGraph(e.Graphics, rect);
         DrawMarkers(e.Graphics, rect);
         DrawRoute(e.Graphics, rect);
 
@@ -79,6 +87,52 @@ public sealed class MapCanvas : Control
             DrawDot(e.Graphics, rect, current, Color.DeepSkyBlue, 7, "YOU");
         if (_target is MapPoint target)
             DrawDot(e.Graphics, rect, target, Color.OrangeRed, 7, "TARGET");
+    }
+
+
+    private void DrawRoadGraph(Graphics g, Rectangle rect)
+    {
+        if (_roadGraph == null || _roadGraph.Nodes.Count == 0) return;
+
+        var nodes = _roadGraph.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var edge in _roadGraph.Edges)
+        {
+            if (!nodes.TryGetValue(edge.A, out var a) ||
+                !nodes.TryGetValue(edge.B, out var b))
+                continue;
+
+            var p1 = ToPixel(rect, a.Position);
+            var p2 = ToPixel(rect, b.Position);
+
+            var color = edge.Blocked
+                ? Color.FromArgb(210, 230, 70, 70)
+                : edge.Class switch
+                {
+                    RoadClass.Primary => Color.FromArgb(220, 40, 215, 255),
+                    RoadClass.Bridge => Color.FromArgb(230, 255, 180, 50),
+                    RoadClass.Track => Color.FromArgb(180, 190, 190, 190),
+                    _ => Color.FromArgb(200, 70, 145, 255)
+                };
+
+            var width = edge.Traversals > 0 ? 3.4f : 2.2f;
+            if (!edge.Verified) color = Color.FromArgb(120, color);
+
+            using var pen = new Pen(color, width)
+            {
+                LineJoin = LineJoin.Round,
+                DashStyle = edge.Blocked ? DashStyle.Dash : DashStyle.Solid
+            };
+
+            g.DrawLine(pen, p1, p2);
+        }
+
+        foreach (var node in _roadGraph.Nodes)
+        {
+            var p = ToPixel(rect, node.Position);
+            using var brush = new SolidBrush(Color.FromArgb(205, 180, 100, 255));
+            g.FillEllipse(brush, p.X - 2.5f, p.Y - 2.5f, 5, 5);
+        }
     }
 
     private void DrawRoute(Graphics g, Rectangle rect)

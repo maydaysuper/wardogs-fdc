@@ -38,6 +38,52 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void RoadGraphRouter_FollowsCalibratedNetwork()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "a", Position = new MapPoint(10, 10) },
+                new() { Id = "b", Position = new MapPoint(10, 20) },
+                new() { Id = "c", Position = new MapPoint(20, 20) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "ab", A = "a", B = "b", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "bc", A = "b", B = "c", Class = RoadClass.Primary, Verified = true }
+            }
+        };
+
+        var route = new RoadGraphRouter().TryPlan(
+            graph,
+            new MapPoint(10.1, 10.1),
+            new MapPoint(19.9, 20.1),
+            RoutePreference.Shortest);
+
+        Assert.NotNull(route);
+        Assert.Contains(route!.Points, p => p.DistanceMeters(new MapPoint(10, 20)) < 5);
+        Assert.True(route.DistanceKm > 1.7);
+    }
+
+    [Fact]
+    public void TraceLearning_FiltersJitterAndTeleport()
+    {
+        var learner = new TraceLearningService();
+        learner.Start(new MapPoint(10, 10));
+
+        Assert.False(learner.Accept(new MapPoint(10.01, 10.01)));
+        Assert.True(learner.Accept(new MapPoint(10.20, 10.00)));
+        Assert.False(learner.Accept(new MapPoint(20, 20)));
+        Assert.True(learner.Accept(new MapPoint(10.40, 10.05)));
+
+        var result = learner.StopAndSimplify();
+        Assert.True(result.Count >= 2);
+        Assert.DoesNotContain(result, p => p.X > 15);
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Speech.Synthesis;
 using WardogsNavigator.Services;
@@ -11,6 +12,8 @@ public sealed class MainForm : Form
     private readonly MapAssetService _mapAssets = new();
     private readonly MapCatalog _maps = new();
     private readonly EconomyEngine _economy = new();
+    private readonly RoadGraphStore _roadGraphs = new();
+    private readonly TraceLearningService _traceLearning = new();
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -34,10 +37,17 @@ public sealed class MainForm : Form
     private readonly TextBox _windowTitle = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
+    private readonly ComboBox _roadClass = new();
+    private readonly Label _roadGraphStatus = new();
+    private readonly Button _roadEditButton = new();
+    private readonly Button _roadLearnButton = new();
     private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1400 };
 
     private RoutePlan? _route;
     private EconomicPlan? _selectedEconomicPlan;
+    private RoadGraph _currentRoadGraph = new();
+    private bool _roadEditMode;
+    private string? _roadEditPreviousNodeId;
     private MapPoint? _lastLivePoint;
     private double? _headingDeg;
     private bool _live;
@@ -47,7 +57,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        _routes = new RoutePlanner(_mapAssets);
+        _routes = new RoutePlanner(_mapAssets, _roadGraphs);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
@@ -94,6 +104,7 @@ public sealed class MainForm : Form
 
         tabs.TabPages.Add(MakeNavigationTab());
         tabs.TabPages.Add(MakeEconomyTab());
+        tabs.TabPages.Add(MakeRoadGraphTab());
         tabs.TabPages.Add(MakeAiTab());
         tabs.TabPages.Add(MakeCalibrationTab());
     }
@@ -227,6 +238,112 @@ public sealed class MainForm : Form
         return tab;
     }
 
+
+    private TabPage MakeRoadGraphTab()
+    {
+        var tab = NewTab("道路校准");
+        var p = Flow();
+
+        p.Controls.Add(Header("Road Graph 精确道路层"));
+
+        _roadClass.DropDownStyle = ComboBoxStyle.DropDownList;
+        _roadClass.Items.AddRange(Enum.GetNames<RoadClass>());
+        _roadClass.SelectedItem = RoadClass.Secondary.ToString();
+        _roadClass.Width = 240;
+        p.Controls.Add(_roadClass);
+
+        _roadEditButton.Text = "开始手工点路";
+        _roadEditButton.AutoSize = true;
+        _roadEditButton.BackColor = Color.FromArgb(42, 48, 58);
+        _roadEditButton.ForeColor = Color.White;
+        _roadEditButton.FlatStyle = FlatStyle.Flat;
+        _roadEditButton.Click += (_, _) => ToggleRoadEdit();
+        p.Controls.Add(_roadEditButton);
+
+        var breakRoad = Btn("断开下一段");
+        breakRoad.Click += (_, _) =>
+        {
+            _roadEditPreviousNodeId = null;
+            UpdateRoadGraphStatus("已断开；下一次点击从新道路开始。");
+        };
+        p.Controls.Add(breakRoad);
+
+        var undo = Btn("撤销上一手工路段");
+        undo.Click += (_, _) =>
+        {
+            if (_roadGraphs.RemoveLastManualSegment(
+                    _currentRoadGraph,
+                    _roadEditPreviousNodeId,
+                    out var previous))
+            {
+                _roadEditPreviousNodeId = previous;
+                SaveRoadGraph();
+                UpdateRoadGraphStatus("已撤销上一手工路段。");
+            }
+        };
+        p.Controls.Add(undo);
+
+        p.Controls.Add(Header("实车道路学习"));
+
+        _roadLearnButton.Text = "开始实车学习";
+        _roadLearnButton.AutoSize = true;
+        _roadLearnButton.BackColor = Color.FromArgb(42, 48, 58);
+        _roadLearnButton.ForeColor = Color.White;
+        _roadLearnButton.FlatStyle = FlatStyle.Flat;
+        _roadLearnButton.Click += (_, _) => ToggleRoadLearning();
+        p.Controls.Add(_roadLearnButton);
+
+        var open = Btn("打开道路数据目录");
+        open.Click += (_, _) =>
+        {
+            Directory.CreateDirectory(_roadGraphs.RootDirectory);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = _roadGraphs.RootDirectory,
+                UseShellExecute = true
+            });
+        };
+        p.Controls.Add(open);
+
+        var clear = Btn("清空当前地图 Road Graph");
+        clear.Click += (_, _) =>
+        {
+            if (MessageBox.Show(
+                    "确认清空当前地图的全部手工/学习道路数据？",
+                    "Road Graph",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
+
+            _currentRoadGraph = _roadGraphs.Reset(_map.Text);
+            _roadEditPreviousNodeId = null;
+            _mapCanvas.SetRoadGraph(_currentRoadGraph);
+            UpdateRoadGraphStatus("已清空当前地图 Road Graph。");
+        };
+        p.Controls.Add(clear);
+
+        _roadGraphStatus.Width = 400;
+        _roadGraphStatus.Height = 125;
+        _roadGraphStatus.ForeColor = Color.FromArgb(130, 220, 255);
+        p.Controls.Add(_roadGraphStatus);
+
+        p.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Width = 400,
+            Height = 230,
+            ForeColor = Color.Silver,
+            Text =
+                "手工点路：开启后，在左侧真实地图上沿道路依次点击；每个点击都会生成/吸附道路节点并立即保存。\r\n\r\n" +
+                "实车学习：只读取已校准的屏幕坐标。开车时每次有效位置变化都会记录；停止后自动去抖、简化并合并到 Road Graph。\r\n\r\n" +
+                "导航优先级：精确 Road Graph → 地图像素 A* → 直线回退。"
+        });
+
+        tab.Controls.Add(p);
+        return tab;
+    }
+
     private TabPage MakeAiTab()
     {
         var tab = NewTab("DeepSeek AI");
@@ -343,6 +460,19 @@ public sealed class MainForm : Form
 
         _mapCanvas.MapClicked += point =>
         {
+            if (_roadEditMode)
+            {
+                _roadGraphs.AddManualPoint(
+                    _currentRoadGraph,
+                    point,
+                    ref _roadEditPreviousNodeId,
+                    SelectedRoadClass());
+
+                SaveRoadGraph();
+                UpdateRoadGraphStatus("手工道路点已保存：" + point);
+                return;
+            }
+
             SetTarget(point);
             _ = PlanRouteAsync(false);
         };
@@ -371,7 +501,11 @@ public sealed class MainForm : Form
     {
         var id = _map.Text;
         var bitmap = await _mapAssets.GetBitmapAsync(id);
+        _currentRoadGraph = _roadGraphs.Load(id);
+        _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
+        _mapCanvas.SetRoadGraph(_currentRoadGraph);
+        UpdateRoadGraphStatus();
         UpdateMapState();
     }
 
@@ -519,13 +653,14 @@ public sealed class MainForm : Form
         }
         else
         {
-            _liveTimer.Stop();
+            if (!_traceLearning.IsRecording)
+                _liveTimer.Stop();
         }
     }
 
     private async Task LiveTickAsync()
     {
-        if (!_live) return;
+        if (!_live && !_traceLearning.IsRecording) return;
 
         var current = await ReadRegionAsync(_settings.PlayerRegion);
         if (current is not MapPoint now) return;
@@ -535,6 +670,21 @@ public sealed class MainForm : Form
 
         _lastLivePoint = now;
         SetSelf(now);
+
+        if (_traceLearning.IsRecording)
+        {
+            _traceLearning.Accept(now);
+            UpdateRoadGraphStatus(
+                "实车学习中：已采样 " +
+                _traceLearning.RawPoints.Count +
+                " 个有效位置点。");
+        }
+
+        if (!_live)
+        {
+            UpdateMapState();
+            return;
+        }
 
         if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
         {
@@ -657,6 +807,95 @@ public sealed class MainForm : Form
 
         _settings.Save();
         UpdateCalibrationStatus();
+    }
+
+
+    private RoadClass SelectedRoadClass()
+    {
+        return Enum.TryParse<RoadClass>(_roadClass.Text, out var roadClass)
+            ? roadClass
+            : RoadClass.Secondary;
+    }
+
+    private void ToggleRoadEdit()
+    {
+        _roadEditMode = !_roadEditMode;
+        _roadEditPreviousNodeId = null;
+
+        _roadEditButton.Text = _roadEditMode
+            ? "停止手工点路"
+            : "开始手工点路";
+
+        UpdateRoadGraphStatus(
+            _roadEditMode
+                ? "手工点路已开启：请在左侧地图沿道路依次点击。"
+                : "手工点路已停止。");
+    }
+
+    private void ToggleRoadLearning()
+    {
+        if (!_traceLearning.IsRecording)
+        {
+            if (!_settings.PlayerRegion.IsValid)
+            {
+                MessageBox.Show("请先在“校准”页框选当前位置坐标区域。");
+                return;
+            }
+
+            MapPoint? current = TryPoint(_selfX, _selfY, out var p) ? p : null;
+            _traceLearning.Start(current);
+            _roadLearnButton.Text = "停止并保存实车学习";
+            _liveTimer.Start();
+
+            UpdateRoadGraphStatus(
+                "实车学习已开启。按正常道路驾驶，程序只读取屏幕坐标。");
+            return;
+        }
+
+        var learned = _traceLearning.StopAndSimplify();
+        _roadLearnButton.Text = "开始实车学习";
+
+        if (!_live)
+            _liveTimer.Stop();
+
+        if (learned.Count >= 2)
+        {
+            _roadGraphs.MergeTrace(
+                _currentRoadGraph,
+                learned,
+                SelectedRoadClass());
+            SaveRoadGraph();
+
+            UpdateRoadGraphStatus(
+                "实车学习完成：合并 " +
+                learned.Count +
+                " 个简化道路节点。");
+        }
+        else
+        {
+            UpdateRoadGraphStatus("实车学习结束：有效轨迹不足，未写入道路图。");
+        }
+    }
+
+    private void SaveRoadGraph()
+    {
+        _roadGraphs.Save(_currentRoadGraph);
+        _currentRoadGraph = _roadGraphs.Load(_map.Text);
+        _mapCanvas.SetRoadGraph(_currentRoadGraph);
+    }
+
+    private void UpdateRoadGraphStatus(string? message = null)
+    {
+        var stats = _roadGraphs.GetStats(_currentRoadGraph);
+
+        _roadGraphStatus.Text =
+            (string.IsNullOrWhiteSpace(message) ? "" : message + "\r\n") +
+            "地图：" + _map.Text + "\r\n" +
+            "节点 " + stats.Nodes +
+            " · 道路边 " + stats.Edges +
+            " · 已验证 " + stats.VerifiedEdges +
+            " · 实车学习 " + stats.LearnedEdges +
+            "\r\n网络总长 " + stats.NetworkKm.ToString("F2") + " km";
     }
 
     private void UpdateCalibrationStatus()
