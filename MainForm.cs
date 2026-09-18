@@ -707,6 +707,8 @@ public sealed class MainForm : Form
         });
 
         _aiOutput.Multiline = true;
+        _aiOutput.ReadOnly = true;
+        _aiOutput.WordWrap = true;
         _aiOutput.ScrollBars = ScrollBars.Vertical;
         _aiOutput.Width = 400;
         _aiOutput.Height = 430;
@@ -1836,7 +1838,11 @@ public sealed class MainForm : Form
                     _route?.EdgeIds.Count > 0 &&
                     !_visionBusy &&
                     DateTime.UtcNow - _lastAutoVisionScan >
-                        TimeSpan.FromMinutes(3))
+                        TimeSpan.FromMinutes(
+                            _settings.PerformanceMode ==
+                                    RuntimePerformanceMode.LowPower
+                                ? 5
+                                : 3))
                 {
                     _lastAutoVisionScan = DateTime.UtcNow;
         
