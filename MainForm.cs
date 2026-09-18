@@ -33,6 +33,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _map = new();
     private readonly ComboBox _routeMode = new();
     private readonly ComboBox _navVehicle = new();
+    private readonly CheckBox _autoTargetCheck = new();
     private readonly TextBox _selfX = new();
     private readonly TextBox _selfY = new();
     private readonly TextBox _targetX = new();
@@ -173,6 +174,17 @@ public sealed class MainForm : Form
         p.Controls.Add(Header("目标 X / Y"));
         p.Controls.Add(CoordRow(_targetX, _targetY));
 
+        _autoTargetCheck.Text = "自动跟随游戏目标标记";
+        _autoTargetCheck.AutoSize = true;
+        _autoTargetCheck.ForeColor = Color.Gainsboro;
+        _autoTargetCheck.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoReadTarget =
+                _autoTargetCheck.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_autoTargetCheck);
+
         var buttons = new FlowLayoutPanel
         {
             Width = 410,
@@ -258,7 +270,7 @@ public sealed class MainForm : Form
         var readSelf = Btn("从屏幕读取当前位置");
         readSelf.Click += async (_, _) => await ReadPlayerOnceAsync();
 
-        var readTarget = Btn("从屏幕读取目标");
+        var readTarget = Btn("读取游戏标记并导航");
         readTarget.Click += async (_, _) => await ReadTargetOnceAsync();
 
         p.Controls.Add(readSelf);
@@ -727,6 +739,8 @@ public sealed class MainForm : Form
         _model.SelectedItem = _settings.DeepSeekModel;
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
 
+        _autoTargetCheck.Checked =
+            _settings.AutoReadTarget;
         _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
         _aiAutoVisionScan.Checked = _settings.AiAutoVisionScan;
 
