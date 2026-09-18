@@ -14,6 +14,16 @@ public sealed class RoadNode
     public MapPoint Position { get; set; }
 }
 
+public sealed class LocalSpeedLearningState
+{
+    public int ObservationCount { get; set; }
+    public double EffectiveWeight { get; set; }
+    public double MeanMultiplier { get; set; } = 1.0;
+    public double Variance { get; set; }
+    public double Confidence { get; set; }
+    public DateTime LastUpdatedUtc { get; set; } = DateTime.UtcNow;
+}
+
 public sealed class RoadEdge
 {
     public string Id { get; set; } = "";
@@ -26,7 +36,9 @@ public sealed class RoadEdge
     public int Traversals { get; set; }
     public double AutoScore { get; set; }
     public Dictionary<string, double> LocalVehicleSpeedMultipliers { get; set; } = new();
+    public Dictionary<string, LocalSpeedLearningState> LocalVehicleSpeedLearning { get; set; } = new();
     public Dictionary<string, double> VehicleSpeedMultipliers { get; set; } = new();
+    public Dictionary<string, double> VehicleAiConfidences { get; set; } = new();
     public double AiRiskAdjustment { get; set; }
     public double AiConfidence { get; set; }
     public string AiNote { get; set; } = "";

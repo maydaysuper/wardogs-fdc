@@ -37,6 +37,8 @@ public sealed class RoadGraphRouter
 
         if (usableEdges.Count == 0) return null;
 
+        var adjacency = BuildAdjacency(usableEdges);
+
         var startSnap = FindNearestEdge(start, usableEdges, nodes);
         var endSnap = FindNearestEdge(end, usableEdges, nodes);
 
@@ -96,7 +98,7 @@ public sealed class RoadGraphRouter
                 var graphPath = FindPath(
                     s.NodeId,
                     e.NodeId,
-                    usableEdges,
+                    adjacency,
                     nodes,
                     preference,
                     vehicleProfile,
@@ -172,7 +174,7 @@ public sealed class RoadGraphRouter
     private static GraphPath? FindPath(
         string startId,
         string endId,
-        IReadOnlyList<RoadEdge> edges,
+        IReadOnlyDictionary<string, List<(string To, RoadEdge Edge)>> adjacency,
         IReadOnlyDictionary<string, RoadNode> nodes,
         RoutePreference preference,
         VehicleRoutingProfile vehicleProfile,
@@ -187,43 +189,58 @@ public sealed class RoadGraphRouter
                 Cost = 0
             };
 
-        var adjacency = new Dictionary<string, List<(string To, RoadEdge Edge)>>(StringComparer.OrdinalIgnoreCase);
+        var startState =
+            new SearchState("", startId);
 
-        foreach (var edge in edges)
-        {
-            if (!adjacency.TryGetValue(edge.A, out var aList))
-                adjacency[edge.A] = aList = new();
-            if (!adjacency.TryGetValue(edge.B, out var bList))
-                adjacency[edge.B] = bList = new();
+        var dist =
+            new Dictionary<SearchState, double>
+            {
+                [startState] = 0
+            };
 
-            aList.Add((edge.B, edge));
-            bList.Add((edge.A, edge));
-        }
+        var previous =
+            new Dictionary<SearchState, SearchState>();
 
-        var dist = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
-        {
-            [startId] = 0
-        };
-        var prevNode = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var prevEdge = new Dictionary<string, RoadEdge>(StringComparer.OrdinalIgnoreCase);
-        var queue = new PriorityQueue<string, double>();
-        queue.Enqueue(startId, 0);
+        var previousEdge =
+            new Dictionary<SearchState, RoadEdge>();
+
+        var queue =
+            new PriorityQueue<SearchState, double>();
+
+        queue.Enqueue(startState, 0);
+
+        SearchState? goal = null;
 
         while (queue.Count > 0)
         {
-            var current = queue.Dequeue();
-            if (current.Equals(endId, StringComparison.OrdinalIgnoreCase))
-                break;
+            var state = queue.Dequeue();
 
-            if (!dist.TryGetValue(current, out var currentCost))
+            if (!dist.TryGetValue(
+                    state,
+                    out var currentCost))
                 continue;
-            if (!adjacency.TryGetValue(current, out var neighbours))
+
+            if (state.NodeId.Equals(
+                    endId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                goal = state;
+                break;
+            }
+
+            if (!adjacency.TryGetValue(
+                    state.NodeId,
+                    out var neighbours) ||
+                !nodes.TryGetValue(
+                    state.NodeId,
+                    out var fromNode))
                 continue;
 
             foreach (var next in neighbours)
             {
-                if (!nodes.TryGetValue(current, out var fromNode) ||
-                    !nodes.TryGetValue(next.To, out var toNode))
+                if (!nodes.TryGetValue(
+                        next.To,
+                        out var toNode))
                     continue;
 
                 var edgeCost = Cost(
@@ -234,36 +251,77 @@ public sealed class RoadGraphRouter
                     vehicleProfile,
                     hazards,
                     visualEdgeRisks);
-                var candidate = currentCost + edgeCost;
 
-                if (dist.TryGetValue(next.To, out var old) && candidate >= old)
+                var turnCost = TurnPenalty(
+                    state.PreviousNodeId,
+                    state.NodeId,
+                    next.To,
+                    nodes,
+                    preference);
+
+                var candidate =
+                    currentCost +
+                    edgeCost +
+                    turnCost;
+
+                var nextState =
+                    new SearchState(
+                        state.NodeId,
+                        next.To);
+
+                if (dist.TryGetValue(
+                        nextState,
+                        out var old) &&
+                    candidate >= old)
                     continue;
 
-                dist[next.To] = candidate;
-                prevNode[next.To] = current;
-                prevEdge[next.To] = next.Edge;
+                dist[nextState] = candidate;
+                previous[nextState] = state;
+                previousEdge[nextState] =
+                    next.Edge;
 
-                var heuristic = toNode.Position.DistanceKm(nodes[endId].Position);
-                queue.Enqueue(next.To, candidate + heuristic * HeuristicFactor(preference));
+                var heuristic =
+                    toNode.Position.DistanceKm(
+                        nodes[endId].Position);
+
+                queue.Enqueue(
+                    nextState,
+                    candidate +
+                    heuristic *
+                    HeuristicFactor(preference));
             }
         }
 
-        if (!dist.TryGetValue(endId, out var totalCost))
+        if (goal is not SearchState goalState ||
+            !dist.TryGetValue(
+                goalState,
+                out var totalCost))
             return null;
 
-        var ids = new List<string> { endId };
-        var pathEdges = new List<RoadEdge>();
-        var cursor = endId;
+        var ids =
+            new List<string>
+            {
+                goalState.NodeId
+            };
 
-        while (!cursor.Equals(startId, StringComparison.OrdinalIgnoreCase))
+        var pathEdges =
+            new List<RoadEdge>();
+
+        var cursor = goalState;
+
+        while (!cursor.Equals(startState))
         {
-            if (!prevNode.TryGetValue(cursor, out var previous) ||
-                !prevEdge.TryGetValue(cursor, out var edge))
+            if (!previous.TryGetValue(
+                    cursor,
+                    out var prev) ||
+                !previousEdge.TryGetValue(
+                    cursor,
+                    out var edge))
                 return null;
 
             pathEdges.Add(edge);
-            cursor = previous;
-            ids.Add(cursor);
+            cursor = prev;
+            ids.Add(cursor.NodeId);
         }
 
         ids.Reverse();
@@ -275,6 +333,74 @@ public sealed class RoadGraphRouter
             Edges = pathEdges,
             Cost = totalCost
         };
+    }
+
+    private static Dictionary<string, List<(string To, RoadEdge Edge)>> BuildAdjacency(
+        IEnumerable<RoadEdge> edges)
+    {
+        var adjacency =
+            new Dictionary<string, List<(string To, RoadEdge Edge)>>(
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var edge in edges)
+        {
+            if (!adjacency.TryGetValue(
+                    edge.A,
+                    out var aList))
+                adjacency[edge.A] =
+                    aList = new();
+
+            if (!adjacency.TryGetValue(
+                    edge.B,
+                    out var bList))
+                adjacency[edge.B] =
+                    bList = new();
+
+            aList.Add((edge.B, edge));
+            bList.Add((edge.A, edge));
+        }
+
+        return adjacency;
+    }
+
+    private static double TurnPenalty(
+        string previousId,
+        string currentId,
+        string nextId,
+        IReadOnlyDictionary<string, RoadNode> nodes,
+        RoutePreference preference)
+    {
+        if (preference == RoutePreference.Shortest ||
+            string.IsNullOrWhiteSpace(previousId) ||
+            !nodes.TryGetValue(previousId, out var previous) ||
+            !nodes.TryGetValue(currentId, out var current) ||
+            !nodes.TryGetValue(nextId, out var next))
+            return 0;
+
+        var incoming =
+            previous.Position.BearingDegTo(
+                current.Position);
+
+        var outgoing =
+            current.Position.BearingDegTo(
+                next.Position);
+
+        var delta = Math.Abs(
+            NormalizeSigned(
+                outgoing - incoming));
+
+        var basePenalty = delta switch
+        {
+            < 25 => 0.0,
+            < 55 => 0.008,
+            < 105 => 0.024,
+            < 150 => 0.060,
+            _ => 0.180
+        };
+
+        return preference == RoutePreference.Safe
+            ? basePenalty * 0.75
+            : basePenalty;
     }
 
     private static double Cost(
@@ -363,36 +489,100 @@ public sealed class RoadGraphRouter
         var baseFactor =
             profile.FactorFor(edge.Class);
 
-        var hasLocal =
-            edge.LocalVehicleSpeedMultipliers.TryGetValue(
+        var localMultiplier = 1.0;
+        var localConfidence = 0.0;
+
+        if (edge.LocalVehicleSpeedLearning.TryGetValue(
                 profile.VehicleId,
-                out var local);
+                out var state))
+        {
+            localMultiplier =
+                Math.Clamp(
+                    state.MeanMultiplier,
+                    0.55,
+                    1.25);
 
-        var hasAi =
-            edge.VehicleSpeedMultipliers.TryGetValue(
+            localConfidence =
+                Math.Clamp(
+                    state.Confidence,
+                    0,
+                    1);
+        }
+        else if (edge.LocalVehicleSpeedMultipliers.TryGetValue(
+                     profile.VehicleId,
+                     out var legacyLocal))
+        {
+            localMultiplier =
+                Math.Clamp(
+                    legacyLocal,
+                    0.55,
+                    1.25);
+
+            // Old data has useful evidence, but no explicit confidence.
+            localConfidence = 0.42;
+        }
+
+        var aiMultiplier = 1.0;
+        var aiConfidence = 0.0;
+
+        if (edge.VehicleSpeedMultipliers.TryGetValue(
                 profile.VehicleId,
-                out var ai);
-
-        double learned = 1.0;
-
-        if (hasLocal && hasAi)
+                out var ai))
         {
-            learned =
-                Math.Clamp(local, 0.55, 1.25) * 0.72 +
-                Math.Clamp(ai, 0.55, 1.25) * 0.28;
-        }
-        else if (hasLocal)
-        {
-            learned =
-                Math.Clamp(local, 0.55, 1.25);
-        }
-        else if (hasAi)
-        {
-            learned =
-                Math.Clamp(ai, 0.55, 1.25);
+            aiMultiplier =
+                Math.Clamp(
+                    ai,
+                    0.55,
+                    1.25);
+
+            aiConfidence =
+                edge.VehicleAiConfidences.TryGetValue(
+                    profile.VehicleId,
+                    out var vehicleConfidence)
+                    ? Math.Clamp(
+                        vehicleConfidence,
+                        0,
+                        1)
+                    : Math.Clamp(
+                        edge.AiConfidence,
+                        0,
+                        1);
         }
 
-        return baseFactor * learned;
+        // The baseline always keeps some weight. Real driving can earn much
+        // more influence than AI, while low-confidence observations remain
+        // close to the original vehicle/road model.
+        var localWeight =
+            localConfidence * 0.75;
+
+        var aiWeight =
+            aiConfidence * 0.30;
+
+        var baseWeight =
+            Math.Max(
+                0.15,
+                1.0 -
+                localWeight -
+                aiWeight);
+
+        var totalWeight =
+            baseWeight +
+            localWeight +
+            aiWeight;
+
+        var learned =
+            (
+                baseWeight +
+                localMultiplier * localWeight +
+                aiMultiplier * aiWeight
+            ) /
+            totalWeight;
+
+        return baseFactor *
+               Math.Clamp(
+                   learned,
+                   0.55,
+                   1.25);
     }
 
     private static double HeuristicFactor(RoutePreference preference) =>
@@ -533,6 +723,18 @@ public sealed class RoadGraphRouter
             km += points[i].DistanceKm(points[i + 1]);
         return km;
     }
+
+    private static double NormalizeSigned(double degrees)
+    {
+        degrees %= 360;
+        if (degrees > 180) degrees -= 360;
+        if (degrees < -180) degrees += 360;
+        return degrees;
+    }
+
+    private readonly record struct SearchState(
+        string PreviousNodeId,
+        string NodeId);
 
     private sealed class EdgeSnap
     {

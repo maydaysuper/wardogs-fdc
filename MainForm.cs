@@ -54,7 +54,8 @@ public sealed class MainForm : Form
     private readonly Button _roadEditButton = new();
     private readonly Button _roadLearnButton = new();
     private readonly Button _autoRoadButton = new();
-    private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1400 };
+    private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1000 };
+    private readonly NavigationPositionFilter _positionFilter = new();
 
     private RoutePlan? _route;
     private EconomicPlan? _selectedEconomicPlan;
@@ -78,6 +79,8 @@ public sealed class MainForm : Form
     private bool _visionBusy;
     private bool _liveTickBusy;
     private DateTime _lastAutoVisionScan = DateTime.MinValue;
+    private DateTime _lastTargetOcrUtc = DateTime.MinValue;
+    private DateTime _lastRerouteUtc = DateTime.MinValue;
     private CancellationTokenSource? _visionCts;
 
     public MainForm()
@@ -762,6 +765,11 @@ public sealed class MainForm : Form
         _visionCts?.Cancel();
         _lastVisionReport = null;
         _lastAutoVisionScan = DateTime.MinValue;
+        _lastTargetOcrUtc = DateTime.MinValue;
+        _lastRerouteUtc = DateTime.MinValue;
+        _positionFilter.Reset();
+        _lastLivePoint = null;
+        _headingDeg = null;
 
         if (_traceLearning.IsRecording)
         {
@@ -858,6 +866,7 @@ public sealed class MainForm : Form
 
             _guidance.Reset(_route);
             _lastSpokenCueKey = "";
+            _lastRerouteUtc = DateTime.UtcNow;
 
             if (_navigationLearning.IsActive)
             {
@@ -1001,6 +1010,10 @@ public sealed class MainForm : Form
         if (_live)
         {
             _overlay.Show();
+            _positionFilter.Reset();
+            _lastLivePoint = null;
+            _headingDeg = null;
+            _lastTargetOcrUtc = DateTime.MinValue;
             _liveTimer.Start();
 
             if (_route != null && TryPoint(_selfX, _selfY, out var current))
@@ -1046,14 +1059,26 @@ public sealed class MainForm : Form
         {
         if (!_live && !_traceLearning.IsRecording) return;
         
-                var current = await ReadRegionAsync(
+                var rawCurrent = await ReadRegionAsync(
                     _settings.PlayerRegion,
                     silent: true);
-                if (current is not MapPoint now) return;
-        
-                if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
-                    _headingDeg = old.BearingDegTo(now);
-        
+
+                if (rawCurrent is not MapPoint rawNow)
+                    return;
+
+                var sampleUtc = DateTime.UtcNow;
+
+                if (!_positionFilter.TryAccept(
+                        rawNow,
+                        sampleUtc,
+                        out var now))
+                    return;
+
+                if (_lastLivePoint is MapPoint old &&
+                    old.DistanceMeters(now) >= 3)
+                    _headingDeg =
+                        old.BearingDegTo(now);
+
                 _lastLivePoint = now;
                 SetSelf(now);
                 _navigationLearning.NotePoint(now);
@@ -1074,8 +1099,13 @@ public sealed class MainForm : Form
                 }
         
                 if (_settings.AutoReadTarget &&
-                    _settings.TargetRegion.IsValid)
+                    _settings.TargetRegion.IsValid &&
+                    DateTime.UtcNow - _lastTargetOcrUtc >=
+                        TimeSpan.FromSeconds(4))
                 {
+                    _lastTargetOcrUtc =
+                        DateTime.UtcNow;
+
                     var target = await ReadRegionAsync(
                         _settings.TargetRegion,
                         silent: true);
@@ -1127,8 +1157,13 @@ public sealed class MainForm : Form
 
                 var cue = _guidance.BuildCue(now, _headingDeg);
 
-                if (cue.ShouldReroute)
+                if (cue.ShouldReroute &&
+                    DateTime.UtcNow - _lastRerouteUtc >=
+                        TimeSpan.FromSeconds(4))
                 {
+                    _lastRerouteUtc =
+                        DateTime.UtcNow;
+
                     _routeSummary.Text =
                         "路线：检测到持续偏航 " +
                         cue.DeviationMeters.ToString("F0") +

@@ -203,6 +203,8 @@ public sealed class RoadGraphStore
 
             edge.LocalVehicleSpeedMultipliers ??=
                 new Dictionary<string, double>();
+            edge.LocalVehicleSpeedLearning ??=
+                new Dictionary<string, LocalSpeedLearningState>();
 
             if (observation.Samples >= 3 &&
                 observation.DistanceKm >= 0.03 &&
@@ -225,25 +227,120 @@ public sealed class RoadGraphStore
                     0.55,
                     1.25);
 
-                if (edge.LocalVehicleSpeedMultipliers.TryGetValue(
+                var sampleQuality =
+                    Math.Clamp(
+                        observation.Samples / 8.0,
+                        0.20,
+                        1.0) *
+                    Math.Clamp(
+                        observation.DistanceKm / 0.12,
+                        0.20,
+                        1.0) *
+                    Math.Clamp(
+                        1.0 -
+                        observation.MaxDeviationMeters / 160.0,
+                        0.20,
+                        1.0);
+
+                if (!edge.LocalVehicleSpeedLearning.TryGetValue(
                         experience.VehicleId,
-                        out var existing))
+                        out var state))
                 {
-                    // EWMA: preserve history while still adapting to new road evidence.
-                    edge.LocalVehicleSpeedMultipliers[
-                        experience.VehicleId] =
-                        Math.Clamp(
-                            existing * 0.72 +
-                            observedRatio * 0.28,
-                            0.55,
-                            1.25);
+                    state = new LocalSpeedLearningState();
+                    edge.LocalVehicleSpeedLearning[
+                        experience.VehicleId] = state;
                 }
-                else
-                {
-                    edge.LocalVehicleSpeedMultipliers[
-                        experience.VehicleId] =
-                        observedRatio;
-                }
+
+                var previousMean =
+                    Math.Clamp(
+                        state.MeanMultiplier,
+                        0.55,
+                        1.25);
+
+                // Clamp the contribution from one trip so a single unusual
+                // stop, collision or OCR artifact cannot corrupt the model.
+                var robustObservation =
+                    state.ObservationCount == 0
+                        ? observedRatio
+                        : Math.Clamp(
+                            observedRatio,
+                            previousMean - 0.14,
+                            previousMean + 0.14);
+
+                var addWeight =
+                    0.5 +
+                    sampleQuality * 2.5;
+
+                var oldWeight =
+                    Math.Max(
+                        0,
+                        state.EffectiveWeight);
+
+                var totalWeight =
+                    oldWeight +
+                    addWeight;
+
+                var newMean =
+                    oldWeight <= 0
+                        ? robustObservation
+                        : (
+                            previousMean * oldWeight +
+                            robustObservation * addWeight
+                          ) /
+                          totalWeight;
+
+                var delta =
+                    robustObservation -
+                    previousMean;
+
+                state.Variance =
+                    oldWeight <= 0
+                        ? 0
+                        : (
+                            state.Variance * oldWeight +
+                            delta * delta * addWeight
+                          ) /
+                          totalWeight;
+
+                state.ObservationCount++;
+                state.EffectiveWeight =
+                    totalWeight;
+                state.MeanMultiplier =
+                    Math.Clamp(
+                        newMean,
+                        0.55,
+                        1.25);
+
+                var stability =
+                    1.0 -
+                    Math.Clamp(
+                        Math.Sqrt(
+                            Math.Max(
+                                0,
+                                state.Variance)) /
+                        0.22,
+                        0,
+                        0.55);
+
+                state.Confidence =
+                    Math.Clamp(
+                        (
+                            1.0 -
+                            Math.Exp(
+                                -totalWeight / 5.5)
+                        ) *
+                        stability,
+                        0,
+                        1);
+
+                state.LastUpdatedUtc =
+                    DateTime.UtcNow;
+
+                // Compatibility view used by existing UI/data. Keep the raw
+                // learned mean here; routing applies confidence separately.
+                edge.LocalVehicleSpeedMultipliers[
+                    experience.VehicleId] =
+                    state.MeanMultiplier;
             }
 
             // Strong real-driving evidence can promote an automatic guess.
@@ -287,11 +384,29 @@ public sealed class RoadGraphStore
                 -0.20,
                 0.20);
 
-            edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
-            edge.VehicleSpeedMultipliers[suggestion.VehicleId] =
-                Math.Clamp(suggestion.SpeedMultiplier, 0.55, 1.25);
+            edge.VehicleSpeedMultipliers ??=
+                new Dictionary<string, double>();
+            edge.VehicleAiConfidences ??=
+                new Dictionary<string, double>();
 
-            edge.AiConfidence = Math.Clamp(suggestion.Confidence, 0, 1);
+            edge.VehicleSpeedMultipliers[
+                suggestion.VehicleId] =
+                Math.Clamp(
+                    suggestion.SpeedMultiplier,
+                    0.55,
+                    1.25);
+
+            edge.VehicleAiConfidences[
+                suggestion.VehicleId] =
+                Math.Clamp(
+                    suggestion.Confidence,
+                    0,
+                    1);
+
+            edge.AiConfidence = Math.Clamp(
+                suggestion.Confidence,
+                0,
+                1);
             edge.AiNote = suggestion.Reason ?? "";
             edge.AiUpdatedUtc = DateTime.UtcNow;
             applied++;
@@ -310,12 +425,16 @@ public sealed class RoadGraphStore
         foreach (var edge in graph.Edges)
         {
             if ((edge.VehicleSpeedMultipliers?.Count ?? 0) == 0 &&
+                (edge.VehicleAiConfidences?.Count ?? 0) == 0 &&
                 Math.Abs(edge.AiRiskAdjustment) <= 1e-9 &&
                 edge.AiConfidence <= 0 &&
                 string.IsNullOrWhiteSpace(edge.AiNote))
                 continue;
 
-            edge.VehicleSpeedMultipliers = new Dictionary<string, double>();
+            edge.VehicleSpeedMultipliers =
+                new Dictionary<string, double>();
+            edge.VehicleAiConfidences =
+                new Dictionary<string, double>();
             edge.AiRiskAdjustment = 0;
             edge.AiConfidence = 0;
             edge.AiNote = "";
@@ -477,7 +596,11 @@ public sealed class RoadGraphStore
         {
             edge.LocalVehicleSpeedMultipliers ??=
                 new Dictionary<string, double>();
+            edge.LocalVehicleSpeedLearning ??=
+                new Dictionary<string, LocalSpeedLearningState>();
             edge.VehicleSpeedMultipliers ??=
+                new Dictionary<string, double>();
+            edge.VehicleAiConfidences ??=
                 new Dictionary<string, double>();
         }
 
