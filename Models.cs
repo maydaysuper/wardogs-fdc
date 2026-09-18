@@ -79,6 +79,8 @@ public sealed class RoutePlan
     public double EstimatedMinutes { get; set; }
     public bool UsedFallback { get; set; }
     public string Source { get; set; } = "";
+    public string VehicleProfileId { get; set; } = "";
+    public List<string> EdgeIds { get; set; } = new();
 }
 
 public sealed class NavigationCue
