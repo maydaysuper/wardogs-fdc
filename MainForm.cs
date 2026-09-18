@@ -14,11 +14,13 @@ public sealed class MainForm : Form
     private readonly EconomyEngine _economy = new();
     private readonly RoadGraphStore _roadGraphs = new();
     private readonly NavigationHazardStore _hazards = new();
+    private readonly NavigationVisionEvidenceStore _visionEvidence = new();
     private readonly NavigationExperienceStore _experiences = new();
     private readonly NavigationLearningSession _navigationLearning = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly AiNavigationLearningService _aiNavigationLearning;
+    private readonly AiVisionNavigationService _aiVision;
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -41,6 +43,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _model = new();
     private readonly TextBox _aiOutput = new();
     private readonly CheckBox _aiAutoApplyLearning = new();
+    private readonly CheckBox _aiAutoVisionScan = new();
     private readonly TextBox _windowTitle = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
@@ -65,13 +68,22 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
     private AiNavigationLearningReport? _lastAiLearningReport;
+    private AiVisionNavigationReport? _lastVisionReport;
     private bool _aiLearningBusy;
+    private bool _visionBusy;
+    private DateTime _lastAutoVisionScan = DateTime.MinValue;
+    private CancellationTokenSource? _visionCts;
 
     public MainForm()
     {
-        _routes = new RoutePlanner(_mapAssets, _roadGraphs, _hazards);
+        _routes = new RoutePlanner(
+            _mapAssets,
+            _roadGraphs,
+            _hazards,
+            _visionEvidence);
         _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
         _aiNavigationLearning = new AiNavigationLearningService(_ai);
+        _aiVision = new AiVisionNavigationService(_ai, _mapAssets);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
@@ -95,6 +107,7 @@ public sealed class MainForm : Form
             _overlay.Close();
             _planCts?.Cancel();
             _autoRoadCts?.Cancel();
+            _visionCts?.Cancel();
         };
     }
 
