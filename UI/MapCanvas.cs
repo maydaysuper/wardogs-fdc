@@ -11,6 +11,7 @@ public sealed class MapCanvas : Control
     private MapPoint? _target;
     private MapDefinition? _definition;
     private RoadGraph? _roadGraph;
+    private IReadOnlyList<NavigationHazard> _hazards = Array.Empty<NavigationHazard>();
 
     public event Action<MapPoint>? MapClicked;
 
@@ -39,6 +40,12 @@ public sealed class MapCanvas : Control
     public void SetRoadGraph(RoadGraph? graph)
     {
         _roadGraph = graph;
+        Invalidate();
+    }
+
+    public void SetHazards(IReadOnlyList<NavigationHazard>? hazards)
+    {
+        _hazards = hazards ?? Array.Empty<NavigationHazard>();
         Invalidate();
     }
 
@@ -79,6 +86,7 @@ public sealed class MapCanvas : Control
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
+        DrawHazards(e.Graphics, rect);
         DrawRoadGraph(e.Graphics, rect);
         DrawMarkers(e.Graphics, rect);
         DrawRoute(e.Graphics, rect);
@@ -89,6 +97,50 @@ public sealed class MapCanvas : Control
             DrawDot(e.Graphics, rect, target, Color.OrangeRed, 7, "TARGET");
     }
 
+
+
+    private void DrawHazards(Graphics g, Rectangle rect)
+    {
+        if (_hazards.Count == 0) return;
+
+        foreach (var hazard in _hazards.Where(h => h.ExpiresUtc > DateTime.UtcNow))
+        {
+            var center = ToPixel(rect, hazard.Center);
+            var radiusUnits = hazard.RadiusMeters / MapPoint.MetersPerUnit;
+            var radiusPx = (float)(radiusUnits / MapPoint.MapSize * rect.Width);
+
+            var severity = Math.Clamp(hazard.Severity, 0, 1);
+            var fillAlpha = 22 + (int)(severity * 35);
+            var strokeAlpha = 90 + (int)(severity * 120);
+
+            using var fill = new SolidBrush(Color.FromArgb(fillAlpha, 255, 70, 70));
+            using var pen = new Pen(Color.FromArgb(strokeAlpha, 255, 95, 70), 2)
+            {
+                DashStyle = DashStyle.Dash
+            };
+
+            g.FillEllipse(
+                fill,
+                center.X - radiusPx,
+                center.Y - radiusPx,
+                radiusPx * 2,
+                radiusPx * 2);
+
+            g.DrawEllipse(
+                pen,
+                center.X - radiusPx,
+                center.Y - radiusPx,
+                radiusPx * 2,
+                radiusPx * 2);
+
+            TextRenderer.DrawText(
+                g,
+                hazard.Label,
+                Font,
+                new Point(center.X + (int)radiusPx + 4, center.Y - 8),
+                Color.OrangeRed);
+        }
+    }
 
     private void DrawRoadGraph(Graphics g, Rectangle rect)
     {
