@@ -25,6 +25,7 @@ public sealed class RoadEdge
     public double Risk { get; set; }
     public int Traversals { get; set; }
     public double AutoScore { get; set; }
+    public Dictionary<string, double> LocalVehicleSpeedMultipliers { get; set; } = new();
     public Dictionary<string, double> VehicleSpeedMultipliers { get; set; } = new();
     public double AiRiskAdjustment { get; set; }
     public double AiConfidence { get; set; }
