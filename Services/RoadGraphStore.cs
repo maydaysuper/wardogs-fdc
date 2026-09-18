@@ -199,6 +199,51 @@ public sealed class RoadGraphStore
             edge.Traversals++;
             changed++;
 
+            edge.LocalVehicleSpeedMultipliers ??=
+                new Dictionary<string, double>();
+
+            if (observation.Samples >= 3 &&
+                observation.DistanceKm >= 0.03 &&
+                observation.Seconds >= 2 &&
+                observation.ObservedSpeedKmh > 2)
+            {
+                var profile =
+                    VehicleRoutingProfileService.ForVehicleId(
+                        experience.VehicleId);
+
+                var expectedSpeed =
+                    Math.Max(
+                        5,
+                        experience.VehicleBaseSpeedKmh *
+                        profile.FactorFor(edge.Class));
+
+                var observedRatio = Math.Clamp(
+                    observation.ObservedSpeedKmh /
+                    expectedSpeed,
+                    0.55,
+                    1.25);
+
+                if (edge.LocalVehicleSpeedMultipliers.TryGetValue(
+                        experience.VehicleId,
+                        out var existing))
+                {
+                    // EWMA: preserve history while still adapting to new road evidence.
+                    edge.LocalVehicleSpeedMultipliers[
+                        experience.VehicleId] =
+                        Math.Clamp(
+                            existing * 0.72 +
+                            observedRatio * 0.28,
+                            0.55,
+                            1.25);
+                }
+                else
+                {
+                    edge.LocalVehicleSpeedMultipliers[
+                        experience.VehicleId] =
+                        observedRatio;
+                }
+            }
+
             // Strong real-driving evidence can promote an automatic guess.
             if (edge.Source.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
                 observation.Samples >= 3 &&
@@ -427,7 +472,12 @@ public sealed class RoadGraphStore
         graph.Edges ??= new List<RoadEdge>();
 
         foreach (var edge in graph.Edges)
-            edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
+        {
+            edge.LocalVehicleSpeedMultipliers ??=
+                new Dictionary<string, double>();
+            edge.VehicleSpeedMultipliers ??=
+                new Dictionary<string, double>();
+        }
 
         var nodeIds = graph.Nodes
             .Where(n => !string.IsNullOrWhiteSpace(n.Id))
