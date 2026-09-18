@@ -1127,6 +1127,13 @@ public sealed class MainForm : Form
             return;
 
         _experiences.Append(experience);
+
+        var changed = _roadGraphs.RecordNavigationExperience(
+            _currentRoadGraph,
+            experience);
+
+        if (changed > 0)
+            SaveRoadGraph();
     }
 
     private VehicleSpec? SelectedNavigationVehicle()
