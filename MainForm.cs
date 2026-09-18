@@ -2899,7 +2899,11 @@ public sealed class MainForm : Form
                 _capture.LastBackendUsed +
                 " " +
                 _capture.LastCaptureMilliseconds.ToString("F1") +
-                " ms  ·  AI缓存 " +
+                " ms  ·  路线缓存 " +
+                _routes.RouteCacheHits +
+                "/" +
+                (_routes.RouteCacheHits + _routes.RouteCacheMisses) +
+                "  ·  AI缓存 " +
                 _aiVision.CacheHits +
                 "/" +
                 (_aiVision.CacheHits + _aiVision.CacheMisses);
