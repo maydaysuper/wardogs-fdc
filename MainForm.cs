@@ -136,9 +136,19 @@ public sealed class MainForm : Form
         _routeMode.Items.AddRange(Enum.GetNames<RoutePreference>());
         _routeMode.Width = 360;
 
+        _navVehicle.DropDownStyle = ComboBoxStyle.DropDownList;
+        _navVehicle.Width = 360;
+        _navVehicle.Items.Clear();
+        _navVehicle.Items.Add(new NavVehicleItem(null, "通用地面车辆"));
+        foreach (var vehicle in _economy.Vehicles)
+            _navVehicle.Items.Add(new NavVehicleItem(vehicle, vehicle.NameZh));
+        _navVehicle.SelectedIndex = 0;
+
         p.Controls.Add(Header("地图 / 路线"));
         p.Controls.Add(_map);
         p.Controls.Add(_routeMode);
+        p.Controls.Add(Header("导航车辆"));
+        p.Controls.Add(_navVehicle);
 
         p.Controls.Add(Header("当前位置 X / Y"));
         p.Controls.Add(CoordRow(_selfX, _selfY));
@@ -174,6 +184,47 @@ public sealed class MainForm : Form
         buttons.Controls.Add(_liveButton);
         buttons.Controls.Add(hud);
         p.Controls.Add(buttons);
+
+        var hazardButtons = new FlowLayoutPanel
+        {
+            Width = 410,
+            Height = 42,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        var addHazard = Btn("当前位置危险 300m/15min");
+        addHazard.Click += async (_, _) =>
+        {
+            if (!TryPoint(_selfX, _selfY, out var current))
+            {
+                MessageBox.Show("请先读取当前位置。");
+                return;
+            }
+
+            _hazards.Add(
+                _map.Text,
+                current,
+                300,
+                0.80,
+                TimeSpan.FromMinutes(15),
+                "临时危险区",
+                "manual");
+
+            UpdateHazards();
+            await PlanRouteAsync(false);
+        };
+
+        var clearHazards = Btn("清除临时危险");
+        clearHazards.Click += async (_, _) =>
+        {
+            _hazards.ClearMap(_map.Text);
+            UpdateHazards();
+            await PlanRouteAsync(false);
+        };
+
+        hazardButtons.Controls.Add(addHazard);
+        hazardButtons.Controls.Add(clearHazards);
+        p.Controls.Add(hazardButtons);
 
         _routeSummary.Width = 400;
         _routeSummary.Height = 78;
