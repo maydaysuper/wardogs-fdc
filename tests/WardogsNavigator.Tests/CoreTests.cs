@@ -404,11 +404,26 @@ public sealed class CoreTests
         };
 
         var session = new NavigationLearningSession();
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "n1", Position = new MapPoint(10, 10) },
+                new() { Id = "n2", Position = new MapPoint(11, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "a", A = "n1", B = "n2", Verified = true }
+            }
+        };
+
         session.Start(
             "test",
             "ural",
             RoutePreference.Fastest,
             route,
+            graph,
             new MapPoint(10, 10));
 
         session.NotePoint(new MapPoint(10.5, 10));
@@ -421,6 +436,7 @@ public sealed class CoreTests
         Assert.Equal("ural", result.VehicleId);
         Assert.Contains("a", result.EdgeIds);
         Assert.True(result.ActualDistanceKm > 0.09);
+        Assert.Contains(result.EdgeObservations, x => x.EdgeId == "a");
     }
 
     [Fact]
