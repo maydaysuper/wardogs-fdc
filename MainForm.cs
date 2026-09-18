@@ -17,6 +17,7 @@ public sealed class MainForm : Form
     private readonly NavigationVisionEvidenceStore _visionEvidence = new();
     private readonly NavigationExperienceStore _experiences = new();
     private readonly NavigationLearningSession _navigationLearning = new();
+    private readonly NavigationGuidanceTracker _guidance = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly AiNavigationLearningService _aiNavigationLearning;
@@ -667,6 +668,7 @@ public sealed class MainForm : Form
             _settings.CurrentMap = _map.Text;
             _settings.Save();
             _route = null;
+            _guidance.Reset(null);
             await SwitchMapAsync();
         };
 
@@ -835,6 +837,8 @@ public sealed class MainForm : Form
                 profile,
                 token);
 
+            _guidance.Reset(_route);
+
             if (_navigationLearning.IsActive)
             {
                 _navigationLearning.NoteReplan(_route);
@@ -850,7 +854,7 @@ public sealed class MainForm : Form
                     self);
             }
 
-            var cue = RoutePlanner.BuildCue(_route, self, _headingDeg);
+            var cue = _guidance.BuildCue(self, _headingDeg);
 
             _routeSummary.Text =
                 "路线：" + _route.DistanceKm.ToString("F2") + " km · ETA " +
@@ -1012,14 +1016,28 @@ public sealed class MainForm : Form
                     await PlanRouteAsync(false);
                     return;
                 }
-        
-                if (RoutePlanner.DistanceToRouteMeters(_route, now) > 150)
+
+                var cue = _guidance.BuildCue(now, _headingDeg);
+
+                if (cue.ShouldReroute)
                 {
+                    _routeSummary.Text =
+                        "路线：检测到持续偏航 " +
+                        cue.DeviationMeters.ToString("F0") +
+                        " m，正在从当前位置重新规划…";
+
+                    if (_settings.SpeakNavigation &&
+                        DateTime.UtcNow - _lastSpoken >
+                            TimeSpan.FromSeconds(6))
+                    {
+                        _lastSpoken = DateTime.UtcNow;
+                        Speak("已偏离路线，正在重新规划");
+                    }
+
                     await PlanRouteAsync(false);
                     return;
                 }
-        
-                var cue = RoutePlanner.BuildCue(_route, now, _headingDeg);
+
                 _overlay.UpdateCue(cue, _route);
                 UpdateMapState();
         
