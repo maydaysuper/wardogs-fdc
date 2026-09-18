@@ -69,8 +69,10 @@ public sealed class MainForm : Form
     private readonly VisualMotionEstimator _visualMotion = new();
     private readonly VisualDrivingTracker _visualTracker = new();
     private readonly IRoadSceneAnalyzer _roadScene = new LocalRoadSceneAnalyzer();
+    private readonly GlobalNavigationHotKeys _globalHotKeys = new();
     private readonly CheckBox _visualDriveCheck = new();
     private readonly Label _visualDriveStatus = new();
+    private readonly Label _hotKeyStatus = new();
 
     private RoutePlan? _route;
     private EconomicPlan? _selectedEconomicPlan;
@@ -105,6 +107,7 @@ public sealed class MainForm : Form
     private DateTime _lastHudSpeedOcrUtc = DateTime.MinValue;
     private DateTime _lastHudSpeedSuccessUtc = DateTime.MinValue;
     private double? _lastHudSpeedKmh;
+    private bool _captureHotKeyBusy;
 
     public MainForm()
     {
@@ -120,7 +123,7 @@ public sealed class MainForm : Form
             new MapVisualRegistrationService(
                 _mapAssets);
 
-        Text = "WARDOGS Tactical Navigator · 0.11.0";
+        Text = "WARDOGS Tactical Navigator · 0.11.1";
         Width = 1460;
         Height = 860;
         MinimumSize = new Size(1100, 680);
@@ -139,7 +142,14 @@ public sealed class MainForm : Form
         _statusTimer.Start();
         UpdateSystemStatus();
 
-        Shown += async (_, _) => await SwitchMapAsync();
+        Shown += async (_, _) =>
+        {
+            _hotKeyStatus.Text =
+                _globalHotKeys.Register(
+                    Handle);
+
+            await SwitchMapAsync();
+        };
         FormClosed += (_, _) =>
         {
             _liveTimer.Stop();
@@ -153,6 +163,7 @@ public sealed class MainForm : Form
             _autoRoadCts?.Cancel();
             _visionCts?.Cancel();
             _targetScanCts?.Cancel();
+            _globalHotKeys.Dispose();
         };
     }
 
@@ -177,7 +188,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Left,
             Width = 300,
-            Text = "WARDOGS  NAVIGATOR\r\n0.10.0",
+            Text = "WARDOGS  NAVIGATOR\r\n0.11.1",
             ForeColor = Color.White,
             Font = new Font(
                 "Microsoft YaHei UI",
@@ -335,6 +346,14 @@ public sealed class MainForm : Form
         _visualDriveStatus.Text =
             "视觉连续定位：等待初始化";
         p.Controls.Add(_visualDriveStatus);
+
+        _hotKeyStatus.Width = 400;
+        _hotKeyStatus.Height = 48;
+        _hotKeyStatus.ForeColor =
+            Color.FromArgb(170, 190, 210);
+        _hotKeyStatus.Text =
+            "全局快捷键：Ctrl+Alt+F8 当前 · Ctrl+Alt+F9 目的地 · Ctrl+Alt+F10 导航";
+        p.Controls.Add(_hotKeyStatus);
 
         var buttons = new FlowLayoutPanel
         {
@@ -1307,6 +1326,106 @@ public sealed class MainForm : Form
             _routeSummary.Text = "路线失败：" + ex.Message;
         }
     }
+
+    protected override void WndProc(
+        ref Message m)
+    {
+        if (m.Msg ==
+                GlobalNavigationHotKeys.MessageId &&
+            GlobalNavigationHotKeys.TryGetAction(
+                m.WParam.ToInt32(),
+                out var action))
+        {
+            BeginInvoke(
+                new Action(
+                    () =>
+                    {
+                        _ =
+                            HandleGlobalNavigationHotKeyAsync(
+                                action);
+                    }));
+        }
+
+        base.WndProc(
+            ref m);
+    }
+
+    private async Task HandleGlobalNavigationHotKeyAsync(
+        GlobalNavigationHotKeyAction action)
+    {
+        if (_captureHotKeyBusy &&
+            action !=
+            GlobalNavigationHotKeyAction.ToggleNavigation)
+        {
+            return;
+        }
+
+        if (action ==
+            GlobalNavigationHotKeyAction.ToggleNavigation)
+        {
+            ToggleLive();
+
+            _hotKeyStatus.Text =
+                _live
+                    ? "全局快捷键：实时导航已启动 · Ctrl+Alt+F10 可停止"
+                    : "全局快捷键：实时导航已停止 · Ctrl+Alt+F10 可启动";
+
+            return;
+        }
+
+        _captureHotKeyBusy = true;
+
+        try
+        {
+            switch (action)
+            {
+                case GlobalNavigationHotKeyAction.CaptureCurrent:
+                    _hotKeyStatus.Text =
+                        "全局快捷键：正在截图识别当前位置…";
+
+                    await ReadPlayerOnceAsync();
+
+                    _hotKeyStatus.Text =
+                        TryPoint(
+                            _selfX,
+                            _selfY,
+                            out var current)
+                            ? "全局快捷键：当前位置 " +
+                              current +
+                              " 已锁定"
+                            : "全局快捷键：当前位置识别失败；请检查当前位置 OCR 选区";
+                    break;
+
+                case GlobalNavigationHotKeyAction.CaptureTarget:
+                    _hotKeyStatus.Text =
+                        "全局快捷键：正在截图识别目的地…";
+
+                    await ReadTargetOnceAsync();
+
+                    _hotKeyStatus.Text =
+                        TryPoint(
+                            _targetX,
+                            _targetY,
+                            out var target)
+                            ? "全局快捷键：目的地 " +
+                              target +
+                              " 已锁定并完成规划"
+                            : "全局快捷键：目的地识别失败；请检查目标 OCR/视觉选区";
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            _hotKeyStatus.Text =
+                "全局快捷键失败：" +
+                ex.Message;
+        }
+        finally
+        {
+            _captureHotKeyBusy = false;
+        }
+    }
+
 
     private async Task ReadPlayerOnceAsync()
     {
@@ -3444,7 +3563,7 @@ public sealed class MainForm : Form
         catch
         {
             _systemStatus.Text =
-                "WARDOGS 0.11.0";
+                "WARDOGS 0.11.1";
         }
     }
 
