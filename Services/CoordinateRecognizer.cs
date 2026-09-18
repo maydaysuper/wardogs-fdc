@@ -57,6 +57,7 @@ public sealed partial class CoordinateRecognizer : IDisposable
         }
 
         var nums = NumberRegex().Matches(text)
+            .Cast<Match>()
             .Select(m => m.Value)
             .Select(v => double.TryParse(v, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var n) ? (double?)n : null)
