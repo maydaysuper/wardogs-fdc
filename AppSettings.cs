@@ -21,9 +21,13 @@ public sealed class AppSettings
     public bool AutoReadTarget { get; set; } = true;
     public bool AiAutoApplyNavigationLearning { get; set; }
     public double AiLearningMinConfidence { get; set; } = 0.82;
+    public bool AiAutoVisionScan { get; set; }
+    public double AiVisionMinConfidence { get; set; } = 0.82;
+    public int AiVisionEvidenceMinutes { get; set; } = 8;
     public RoutePreference RoutePreference { get; set; } = RoutePreference.Fastest;
     public NormalizedRegion PlayerRegion { get; set; } = new();
     public NormalizedRegion TargetRegion { get; set; } = new();
+    public NormalizedRegion VisionMapRegion { get; set; } = new();
 
     private static string Dir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
