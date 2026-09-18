@@ -259,9 +259,14 @@ public sealed class RoadGraphRouter
             _ => 0.80
         };
 
+        var autoPenalty = edge.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            ? (1.0 - Math.Clamp(edge.AutoScore, 0, 1)) * 0.85 + 0.18
+            : 0.0;
+
         var confidencePenalty =
             (edge.Verified ? 0.0 : 0.45) +
-            (edge.Traversals > 0 ? 0.0 : 0.18);
+            (edge.Traversals > 0 ? 0.0 : 0.18) +
+            autoPenalty;
 
         return preference switch
         {
@@ -343,15 +348,23 @@ public sealed class RoadGraphRouter
 
         var verified = list.Count(e => e.Verified) / (double)list.Count;
         var learned = list.Count(e => e.Traversals > 0) / (double)list.Count;
+        var auto = list
+            .Where(e => e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var autoQuality = auto.Count == 0
+            ? 0.0
+            : auto.Average(e => Math.Clamp(e.AutoScore, 0, 1));
+
         var snap = 1.0 - Math.Clamp(
             (startSnapMeters + endSnapMeters) / (DefaultSnapLimitMeters * 2.0),
             0,
             1);
 
         return Math.Clamp(
-            verified * 0.45 +
-            learned * 0.25 +
-            snap * 0.30,
+            verified * 0.43 +
+            learned * 0.22 +
+            snap * 0.23 +
+            autoQuality * 0.12,
             0,
             1);
     }
