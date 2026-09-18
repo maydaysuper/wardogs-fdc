@@ -170,6 +170,69 @@ public sealed class RoadGraphStore
         graph.UpdatedUtc = DateTime.UtcNow;
     }
 
+    public int ApplyAiSuggestions(
+        RoadGraph graph,
+        IEnumerable<AiRoadSuggestion> suggestions,
+        double minimumConfidence = 0.72)
+    {
+        var applied = 0;
+
+        foreach (var suggestion in suggestions)
+        {
+            if (suggestion.Confidence < minimumConfidence)
+                continue;
+
+            var edge = graph.Edges.FirstOrDefault(e =>
+                e.Id.Equals(suggestion.EdgeId, StringComparison.OrdinalIgnoreCase));
+
+            if (edge == null)
+                continue;
+
+            edge.Risk = Math.Clamp(
+                edge.Risk + Math.Clamp(suggestion.RiskDelta, -0.20, 0.20),
+                0,
+                1);
+
+            edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
+            edge.VehicleSpeedMultipliers[suggestion.VehicleId] =
+                Math.Clamp(suggestion.SpeedMultiplier, 0.55, 1.25);
+
+            edge.AiConfidence = Math.Clamp(suggestion.Confidence, 0, 1);
+            edge.AiNote = suggestion.Reason ?? "";
+            edge.AiUpdatedUtc = DateTime.UtcNow;
+            applied++;
+        }
+
+        if (applied > 0)
+            graph.UpdatedUtc = DateTime.UtcNow;
+
+        return applied;
+    }
+
+    public int RemoveAiLearning(RoadGraph graph)
+    {
+        var changed = 0;
+
+        foreach (var edge in graph.Edges)
+        {
+            if ((edge.VehicleSpeedMultipliers?.Count ?? 0) == 0 &&
+                edge.AiConfidence <= 0 &&
+                string.IsNullOrWhiteSpace(edge.AiNote))
+                continue;
+
+            edge.VehicleSpeedMultipliers = new Dictionary<string, double>();
+            edge.AiConfidence = 0;
+            edge.AiNote = "";
+            edge.AiUpdatedUtc = null;
+            changed++;
+        }
+
+        if (changed > 0)
+            graph.UpdatedUtc = DateTime.UtcNow;
+
+        return changed;
+    }
+
     public int RemoveAutoGraph(RoadGraph graph)
     {
         var removed = graph.Edges.RemoveAll(e =>
@@ -313,6 +376,9 @@ public sealed class RoadGraphStore
     {
         graph.Nodes ??= new List<RoadNode>();
         graph.Edges ??= new List<RoadEdge>();
+
+        foreach (var edge in graph.Edges)
+            edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
 
         var nodeIds = graph.Nodes
             .Where(n => !string.IsNullOrWhiteSpace(n.Id))
