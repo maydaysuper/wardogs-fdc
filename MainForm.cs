@@ -760,6 +760,7 @@ public sealed class MainForm : Form
                     profile.VehicleId,
                     preference,
                     _route,
+                    _currentRoadGraph,
                     self);
             }
 
@@ -857,6 +858,7 @@ public sealed class MainForm : Form
                     profile.VehicleId,
                     preference,
                     _route,
+                    _currentRoadGraph,
                     current);
             }
         }
