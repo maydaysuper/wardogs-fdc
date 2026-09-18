@@ -1,0 +1,11 @@
+[
+  { "id": "bobcat", "nameZh": "山猫", "price": 500, "speedKmh": 75, "passengers": 2, "palletSlots": 0, "fuelL": 18, "rangeKm": 8, "air": false, "armed": false },
+  { "id": "dune-buggy", "nameZh": "沙丘车", "price": 1500, "speedKmh": 130, "passengers": 3, "palletSlots": 0, "fuelL": 68, "rangeKm": 14, "air": false, "armed": false },
+  { "id": "kodiak", "nameZh": "科迪亚克", "price": 2500, "speedKmh": 154, "passengers": 4, "palletSlots": 0, "fuelL": 50, "rangeKm": 17, "air": false, "armed": false },
+  { "id": "ural", "nameZh": "乌拉尔", "price": 5000, "speedKmh": 79, "passengers": 3, "palletSlots": 2, "fuelL": 85, "rangeKm": 21, "air": false, "armed": false },
+  { "id": "ural-defender", "nameZh": "乌拉尔防空", "price": 6000, "speedKmh": 79, "passengers": 3, "palletSlots": 2, "fuelL": 85, "rangeKm": 21, "air": false, "armed": false },
+  { "id": "ural-defender-m249", "nameZh": "乌拉尔防空 M249", "price": 6750, "speedKmh": 79, "passengers": 3, "palletSlots": 2, "fuelL": 85, "rangeKm": 21, "air": false, "armed": true },
+  { "id": "mh6", "nameZh": "MH-6", "price": 6250, "speedKmh": 350, "passengers": 6, "palletSlots": 0, "fuelL": 105, "rangeKm": 24, "air": true, "armed": false },
+  { "id": "lakota", "nameZh": "拉科塔", "price": 7400, "speedKmh": 445, "passengers": 13, "palletSlots": 1, "fuelL": 120, "rangeKm": 27, "air": true, "armed": false },
+  { "id": "lakota-miniguns", "nameZh": "拉科塔机枪", "price": 8000, "speedKmh": 445, "passengers": 13, "palletSlots": 1, "fuelL": 120, "rangeKm": 27, "air": true, "armed": true }
+]
