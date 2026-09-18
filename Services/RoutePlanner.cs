@@ -10,14 +10,19 @@ public sealed class RoutePlanner
 {
     private readonly MapAssetService _assets;
     private readonly RoadGraphStore _roadGraphs;
+    private readonly NavigationHazardStore _hazards;
     private readonly RoadGraphRouter _graphRouter = new();
     private readonly Dictionary<string, float[]> _costCache = new(StringComparer.OrdinalIgnoreCase);
     private const int Grid = 384;
 
-    public RoutePlanner(MapAssetService assets, RoadGraphStore? roadGraphs = null)
+    public RoutePlanner(
+        MapAssetService assets,
+        RoadGraphStore? roadGraphs = null,
+        NavigationHazardStore? hazards = null)
     {
         _assets = assets;
         _roadGraphs = roadGraphs ?? new RoadGraphStore();
+        _hazards = hazards ?? new NavigationHazardStore();
     }
 
     public async Task<RoutePlan> PlanAsync(
@@ -27,15 +32,32 @@ public sealed class RoutePlanner
         RoutePreference preference,
         double speedKmh,
         bool air,
+        VehicleRoutingProfile? vehicleProfile = null,
         CancellationToken cancellationToken = default)
     {
+        vehicleProfile ??= VehicleRoutingProfileService.Generic();
+
         if (air)
-            return Straight(mapId, start, end, preference, speedKmh, "air-direct");
+            return Straight(
+                mapId,
+                start,
+                end,
+                preference,
+                speedKmh,
+                "air-direct",
+                vehicleProfile.VehicleId);
 
         try
         {
             var graph = _roadGraphs.Load(mapId);
-            var graphRoute = _graphRouter.TryPlan(graph, start, end, preference);
+            var activeHazards = _hazards.GetActive(mapId);
+            var graphRoute = _graphRouter.TryPlan(
+                graph,
+                start,
+                end,
+                preference,
+                vehicleProfile,
+                activeHazards);
 
             if (graphRoute != null &&
                 graphRoute.Points.Count >= 2 &&
@@ -57,7 +79,12 @@ public sealed class RoutePlanner
                         Math.Round(graphRoute.Confidence * 100).ToString("F0") +
                         "% · " +
                         graphRoute.EdgeCount +
-                        " edges"
+                        " edges" +
+                        (activeHazards.Count > 0
+                            ? " · hazards " + activeHazards.Count
+                            : ""),
+                    VehicleProfileId = vehicleProfile.VehicleId,
+                    EdgeIds = graphRoute.EdgeIds
                 };
             }
 
@@ -65,7 +92,15 @@ public sealed class RoutePlanner
             var costs = GetOrBuildCosts(mapPath, mapId, preference);
             var points = await Task.Run(() => AStar(costs, start, end, cancellationToken), cancellationToken);
             if (points.Count < 2)
-                return Straight(mapId, start, end, preference, speedKmh, "fallback-direct", true);
+                return Straight(
+                    mapId,
+                    start,
+                    end,
+                    preference,
+                    speedKmh,
+                    "fallback-direct",
+                    vehicleProfile.VehicleId,
+                    true);
 
             var simplified = Simplify(points, 0.18);
             var km = PolylineKm(simplified);
@@ -76,12 +111,21 @@ public sealed class RoutePlanner
                 Points = simplified,
                 DistanceKm = km,
                 EstimatedMinutes = speedKmh > 1 ? km / speedKmh * 60.0 : 0,
-                Source = "map-raster-a-star"
+                Source = "map-raster-a-star",
+                VehicleProfileId = vehicleProfile.VehicleId
             };
         }
         catch
         {
-            return Straight(mapId, start, end, preference, speedKmh, "fallback-direct", true);
+            return Straight(
+                mapId,
+                start,
+                end,
+                preference,
+                speedKmh,
+                "fallback-direct",
+                vehicleProfile.VehicleId,
+                true);
         }
     }
 
@@ -340,6 +384,7 @@ public sealed class RoutePlanner
         RoutePreference preference,
         double speedKmh,
         string source,
+        string vehicleProfileId,
         bool fallback = false)
     {
         var km = a.DistanceKm(b);
@@ -351,6 +396,7 @@ public sealed class RoutePlanner
             DistanceKm = km,
             EstimatedMinutes = speedKmh > 1 ? km / speedKmh * 60 : 0,
             Source = source,
+            VehicleProfileId = vehicleProfileId,
             UsedFallback = fallback
         };
     }
