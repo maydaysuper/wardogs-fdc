@@ -9,10 +9,9 @@
     <AssemblyName>WardogsNavigator</AssemblyName>
     <RootNamespace>WardogsNavigator</RootNamespace>
     <Version>0.10.0</Version>
-    <PublishSingleFile>true</PublishSingleFile>
+    <PublishSingleFile>false</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
