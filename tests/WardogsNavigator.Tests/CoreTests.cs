@@ -323,6 +323,71 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void NormalNavigation_CanPromoteStrongAutoRoadEvidence()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "a", Position = new MapPoint(10, 10) },
+                new() { Id = "b", Position = new MapPoint(11, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new()
+                {
+                    Id = "ab",
+                    A = "a",
+                    B = "b",
+                    Source = "auto",
+                    Verified = false,
+                    AutoScore = 0.75
+                }
+            }
+        };
+
+        var experience = new NavigationExperience
+        {
+            MapId = "test",
+            VehicleId = "ural",
+            Completed = true,
+            EdgeObservations = new List<EdgeTravelObservation>
+            {
+                new()
+                {
+                    EdgeId = "ab",
+                    Samples = 5,
+                    DistanceKm = 0.08,
+                    Seconds = 8,
+                    MaxDeviationMeters = 20
+                }
+            }
+        };
+
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store = new RoadGraphStore(temp);
+            Assert.Equal(1, store.RecordNavigationExperience(graph, experience));
+
+            var edge = Assert.Single(graph.Edges);
+            Assert.Equal("trace", edge.Source);
+            Assert.True(edge.Verified);
+            Assert.Equal(1, edge.Traversals);
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
     public void AiLearning_AppliesOnlyHighConfidenceSuggestions()
     {
         var graph = new RoadGraph
