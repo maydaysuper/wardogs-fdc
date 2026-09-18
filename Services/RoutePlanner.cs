@@ -13,6 +13,7 @@ public sealed class RoutePlanner
     private readonly NavigationHazardStore _hazards;
     private readonly NavigationVisionEvidenceStore _visionEvidence;
     private readonly RoadGraphRouter _graphRouter = new();
+    private readonly SemaphoreSlim _predictionGate = new(1, 1);
     private readonly Dictionary<string, float[]> _costCache = new(StringComparer.OrdinalIgnoreCase);
     private const int Grid = 384;
 
@@ -136,6 +137,97 @@ public sealed class RoutePlanner
                 "fallback-direct",
                 vehicleProfile.VehicleId,
                 true);
+        }
+    }
+
+    public async Task WarmPredictedReroutesAsync(
+        string mapId,
+        RoutePlan route,
+        RoutePreference preference,
+        double speedKmh,
+        VehicleRoutingProfile vehicleProfile,
+        CancellationToken cancellationToken = default)
+    {
+        if (route.UsedFallback ||
+            route.Points.Count < 6 ||
+            route.EdgeIds.Count == 0)
+            return;
+
+        if (!await _predictionGate.WaitAsync(
+                0,
+                cancellationToken))
+            return;
+
+        try
+        {
+            var graph =
+                _roadGraphs.Load(
+                    mapId);
+
+            var hazards =
+                _hazards.GetActive(
+                    mapId);
+
+            var visualRisks =
+                _visionEvidence.GetRiskMap(
+                    mapId);
+
+            var destination =
+                route.Points[^1];
+
+            var indexes =
+                new[]
+                {
+                    (int)Math.Round(
+                        (route.Points.Count - 1) *
+                        0.28),
+                    (int)Math.Round(
+                        (route.Points.Count - 1) *
+                        0.52),
+                    (int)Math.Round(
+                        (route.Points.Count - 1) *
+                        0.74)
+                }
+                .Select(i =>
+                    Math.Clamp(
+                        i,
+                        1,
+                        route.Points.Count - 2))
+                .Distinct()
+                .ToArray();
+
+            await Task.Run(
+                () =>
+                {
+                    foreach (var index in indexes)
+                    {
+                        cancellationToken
+                            .ThrowIfCancellationRequested();
+
+                        _graphRouter.TryPlan(
+                            graph,
+                            route.Points[index],
+                            destination,
+                            preference,
+                            vehicleProfile,
+                            hazards,
+                            visualRisks,
+                            speedKmh);
+                    }
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Prediction warming is opportunistic. A failure must never
+            // affect the foreground navigation route.
+        }
+        finally
+        {
+            _predictionGate.Release();
         }
     }
 

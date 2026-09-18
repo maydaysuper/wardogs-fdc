@@ -8,6 +8,25 @@ public sealed class RoadGraphRouter
 {
     public const double DefaultSnapLimitMeters = 260;
 
+    private readonly object _cacheSync = new();
+    private readonly Dictionary<string, CachedTopology> _topologyCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, GraphPath> _pathCache =
+        new(StringComparer.Ordinal);
+
+    public int TopologyCacheHits { get; private set; }
+    public int TopologyCacheMisses { get; private set; }
+    public int PathCacheHits { get; private set; }
+    public int PathCacheMisses { get; private set; }
+
+    public void ResetCacheCounters()
+    {
+        TopologyCacheHits = 0;
+        TopologyCacheMisses = 0;
+        PathCacheHits = 0;
+        PathCacheMisses = 0;
+    }
+
     public RoadGraphRoute? TryPlan(
         RoadGraph graph,
         MapPoint start,
@@ -27,17 +46,28 @@ public sealed class RoadGraphRouter
         visualEdgeRisks ??= new Dictionary<string, double>(
             StringComparer.OrdinalIgnoreCase);
 
-        var nodes = graph.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
-        var usableEdges = graph.Edges
-            .Where(e =>
-                !e.Blocked &&
-                nodes.ContainsKey(e.A) &&
-                nodes.ContainsKey(e.B))
-            .ToList();
+        var topology =
+            GetTopology(graph);
 
-        if (usableEdges.Count == 0) return null;
+        var nodes =
+            topology.Nodes;
 
-        var adjacency = BuildAdjacency(usableEdges);
+        var usableEdges =
+            topology.UsableEdges;
+
+        if (usableEdges.Count == 0)
+            return null;
+
+        var adjacency =
+            topology.Adjacency;
+
+        var environmentKey =
+            BuildEnvironmentKey(
+                topology.Key,
+                preference,
+                vehicleProfile,
+                hazards,
+                visualEdgeRisks);
 
         var startSnap = FindNearestEdge(start, usableEdges, nodes);
         var endSnap = FindNearestEdge(end, usableEdges, nodes);
@@ -103,7 +133,8 @@ public sealed class RoadGraphRouter
                     preference,
                     vehicleProfile,
                     hazards,
-                    visualEdgeRisks);
+                    visualEdgeRisks,
+                    environmentKey);
 
                 if (graphPath == null) continue;
 
@@ -171,7 +202,7 @@ public sealed class RoadGraphRouter
         };
     }
 
-    private static GraphPath? FindPath(
+    private GraphPath? FindPath(
         string startId,
         string endId,
         IReadOnlyDictionary<string, List<(string To, RoadEdge Edge)>> adjacency,
@@ -179,8 +210,29 @@ public sealed class RoadGraphRouter
         RoutePreference preference,
         VehicleRoutingProfile vehicleProfile,
         IReadOnlyList<NavigationHazard> hazards,
-        IReadOnlyDictionary<string, double> visualEdgeRisks)
+        IReadOnlyDictionary<string, double> visualEdgeRisks,
+        string environmentKey)
     {
+        var cacheKey =
+            environmentKey +
+            "|" +
+            startId +
+            ">" +
+            endId;
+
+        lock (_cacheSync)
+        {
+            if (_pathCache.TryGetValue(
+                    cacheKey,
+                    out var cached))
+            {
+                PathCacheHits++;
+                return ClonePath(cached);
+            }
+
+            PathCacheMisses++;
+        }
+
         if (startId.Equals(endId, StringComparison.OrdinalIgnoreCase))
             return new GraphPath
             {
@@ -327,13 +379,159 @@ public sealed class RoadGraphRouter
         ids.Reverse();
         pathEdges.Reverse();
 
-        return new GraphPath
+        var result =
+            new GraphPath
+            {
+                NodeIds = ids,
+                Edges = pathEdges,
+                Cost = totalCost
+            };
+
+        lock (_cacheSync)
         {
-            NodeIds = ids,
-            Edges = pathEdges,
-            Cost = totalCost
-        };
+            if (_pathCache.Count > 768)
+                _pathCache.Clear();
+
+            _pathCache[cacheKey] =
+                ClonePath(result);
+        }
+
+        return result;
     }
+
+    private CachedTopology GetTopology(
+        RoadGraph graph)
+    {
+        var key =
+            graph.MapId +
+            "|" +
+            graph.UpdatedUtc.Ticks +
+            "|" +
+            graph.Nodes.Count +
+            "|" +
+            graph.Edges.Count;
+
+        lock (_cacheSync)
+        {
+            if (_topologyCache.TryGetValue(
+                    key,
+                    out var cached))
+            {
+                TopologyCacheHits++;
+                return cached;
+            }
+
+            TopologyCacheMisses++;
+        }
+
+        var nodes =
+            graph.Nodes.ToDictionary(
+                n => n.Id,
+                StringComparer.OrdinalIgnoreCase);
+
+        var usableEdges =
+            graph.Edges
+                .Where(e =>
+                    !e.Blocked &&
+                    nodes.ContainsKey(e.A) &&
+                    nodes.ContainsKey(e.B))
+                .ToList();
+
+        var topology =
+            new CachedTopology
+            {
+                Key = key,
+                Nodes = nodes,
+                UsableEdges = usableEdges,
+                Adjacency =
+                    BuildAdjacency(
+                        usableEdges)
+            };
+
+        lock (_cacheSync)
+        {
+            if (_topologyCache.Count > 12)
+            {
+                _topologyCache.Clear();
+                _pathCache.Clear();
+            }
+
+            _topologyCache[key] =
+                topology;
+        }
+
+        return topology;
+    }
+
+    private static string BuildEnvironmentKey(
+        string topologyKey,
+        RoutePreference preference,
+        VehicleRoutingProfile vehicleProfile,
+        IReadOnlyList<NavigationHazard> hazards,
+        IReadOnlyDictionary<string, double> visualEdgeRisks)
+    {
+        var hazardSignature =
+            string.Join(
+                ";",
+                hazards
+                    .Where(h =>
+                        h.ExpiresUtc >
+                        DateTime.UtcNow)
+                    .OrderBy(h =>
+                        h.Center.X)
+                    .ThenBy(h =>
+                        h.Center.Y)
+                    .Select(h =>
+                        Math.Round(
+                            h.Center.X,
+                            2) +
+                        "," +
+                        Math.Round(
+                            h.Center.Y,
+                            2) +
+                        "," +
+                        Math.Round(
+                            h.RadiusMeters,
+                            0) +
+                        "," +
+                        Math.Round(
+                            h.Severity,
+                            2)));
+
+        var visionSignature =
+            string.Join(
+                ";",
+                visualEdgeRisks
+                    .OrderBy(x => x.Key)
+                    .Select(x =>
+                        x.Key +
+                        ":" +
+                        Math.Round(
+                            x.Value,
+                            2)));
+
+        return
+            topologyKey +
+            "|" +
+            preference +
+            "|" +
+            vehicleProfile.VehicleId +
+            "|H:" +
+            hazardSignature +
+            "|V:" +
+            visionSignature;
+    }
+
+    private static GraphPath ClonePath(
+        GraphPath source) =>
+        new()
+        {
+            NodeIds =
+                source.NodeIds.ToList(),
+            Edges =
+                source.Edges.ToList(),
+            Cost = source.Cost
+        };
 
     private static Dictionary<string, List<(string To, RoadEdge Edge)>> BuildAdjacency(
         IEnumerable<RoadEdge> edges)
@@ -735,6 +933,17 @@ public sealed class RoadGraphRouter
     private readonly record struct SearchState(
         string PreviousNodeId,
         string NodeId);
+
+    private sealed class CachedTopology
+    {
+        public string Key { get; init; } = "";
+        public IReadOnlyDictionary<string, RoadNode> Nodes { get; init; } =
+            new Dictionary<string, RoadNode>();
+        public IReadOnlyList<RoadEdge> UsableEdges { get; init; } =
+            Array.Empty<RoadEdge>();
+        public IReadOnlyDictionary<string, List<(string To, RoadEdge Edge)>> Adjacency { get; init; } =
+            new Dictionary<string, List<(string To, RoadEdge Edge)>>();
+    }
 
     private sealed class EdgeSnap
     {

@@ -9,6 +9,7 @@ public sealed class MapViewportRegistration
     public double Top01 { get; set; }
     public double Width01 { get; set; } = 1;
     public double Height01 { get; set; } = 1;
+    public double RotationDeg { get; set; }
     public double Confidence { get; set; }
     public double RawScore { get; set; }
     public DateTime RegisteredUtc { get; set; } = DateTime.UtcNow;
@@ -19,7 +20,8 @@ public sealed class MapViewportRegistration
         Left01 >= -0.001 &&
         Top01 >= -0.001 &&
         Left01 + Width01 <= 1.001 &&
-        Top01 + Height01 <= 1.001;
+        Top01 + Height01 <= 1.001 &&
+        double.IsFinite(RotationDeg);
 
     public MapPoint ScreenPixelToWorld(
         double x,
@@ -37,13 +39,42 @@ public sealed class MapViewportRegistration
             0,
             1);
 
-        var mapX01 =
+        var centerX =
             Left01 +
-            u * Width01;
+            Width01 * 0.5;
+
+        var centerY =
+            Top01 +
+            Height01 * 0.5;
+
+        var localX =
+            (u - 0.5) *
+            Width01;
+
+        var localY =
+            (v - 0.5) *
+            Height01;
+
+        var radians =
+            RotationDeg *
+            Math.PI /
+            180.0;
+
+        var cos =
+            Math.Cos(radians);
+
+        var sin =
+            Math.Sin(radians);
+
+        var mapX01 =
+            centerX +
+            localX * cos -
+            localY * sin;
 
         var mapY01 =
-            Top01 +
-            v * Height01;
+            centerY +
+            localX * sin +
+            localY * cos;
 
         return new MapPoint(
             Math.Clamp(
@@ -61,6 +92,119 @@ public sealed class MapViewportRegistration
             MapPoint.MapSize);
     }
 
+    public PointF MapNormalizedToScreen01(
+        double mapX01,
+        double mapY01)
+    {
+        var centerX =
+            Left01 +
+            Width01 * 0.5;
+
+        var centerY =
+            Top01 +
+            Height01 * 0.5;
+
+        var dx =
+            mapX01 -
+            centerX;
+
+        var dy =
+            mapY01 -
+            centerY;
+
+        var radians =
+            -RotationDeg *
+            Math.PI /
+            180.0;
+
+        var cos =
+            Math.Cos(radians);
+        var sin =
+            Math.Sin(radians);
+
+        return new PointF(
+            (float)(
+                0.5 +
+                (
+                    dx * cos -
+                    dy * sin
+                ) /
+                Math.Max(
+                    0.0001,
+                    Width01)),
+            (float)(
+                0.5 +
+                (
+                    dx * sin +
+                    dy * cos
+                ) /
+                Math.Max(
+                    0.0001,
+                    Height01)));
+    }
+
+    public PointF[] GetMapNormalizedCorners()
+    {
+        var centerX =
+            Left01 +
+            Width01 * 0.5;
+
+        var centerY =
+            Top01 +
+            Height01 * 0.5;
+
+        var radians =
+            RotationDeg *
+            Math.PI /
+            180.0;
+
+        var cos =
+            Math.Cos(radians);
+        var sin =
+            Math.Sin(radians);
+
+        var corners =
+            new[]
+            {
+                (-0.5, -0.5),
+                (0.5, -0.5),
+                (0.5, 0.5),
+                (-0.5, 0.5)
+            };
+
+        return corners
+            .Select(c =>
+            {
+                var lx =
+                    c.Item1 *
+                    Width01;
+                var ly =
+                    c.Item2 *
+                    Height01;
+
+                return new PointF(
+                    (float)(
+                        centerX +
+                        lx * cos -
+                        ly * sin),
+                    (float)(
+                        centerY +
+                        lx * sin +
+                        ly * cos));
+            })
+            .ToArray();
+    }
+
+    public bool RotatedViewportInsideMap(double margin = 0.001)
+    {
+        return GetMapNormalizedCorners()
+            .All(p =>
+                p.X >= -margin &&
+                p.Y >= -margin &&
+                p.X <= 1 + margin &&
+                p.Y <= 1 + margin);
+    }
+
     public PointF WorldToScreenPixel(
         MapPoint point,
         int screenWidth,
@@ -75,14 +219,51 @@ public sealed class MapViewportRegistration
             point.Y /
             MapPoint.MapSize;
 
+        var centerX =
+            Left01 +
+            Width01 * 0.5;
+
+        var centerY =
+            Top01 +
+            Height01 * 0.5;
+
+        var dx =
+            x01 -
+            centerX;
+
+        var dy =
+            y01 -
+            centerY;
+
+        var radians =
+            -RotationDeg *
+            Math.PI /
+            180.0;
+
+        var cos =
+            Math.Cos(radians);
+
+        var sin =
+            Math.Sin(radians);
+
+        var localX =
+            dx * cos -
+            dy * sin;
+
+        var localY =
+            dx * sin +
+            dy * cos;
+
         var u =
-            (x01 - Left01) /
+            0.5 +
+            localX /
             Math.Max(
                 0.0001,
                 Width01);
 
         var v =
-            (y01 - Top01) /
+            0.5 +
+            localY /
             Math.Max(
                 0.0001,
                 Height01);
