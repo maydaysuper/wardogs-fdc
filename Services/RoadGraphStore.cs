@@ -127,8 +127,9 @@ public sealed class RoadGraphStore
         graph.Edges.Remove(candidate);
         PruneUnusedNodes(graph);
 
-        if (previousNodeId != null &&
-            !graph.Nodes.Any(n => n.Id.Equals(previousNodeId, StringComparison.OrdinalIgnoreCase)))
+        var previousCandidate = previousNodeId;
+        if (previousCandidate != null &&
+            !graph.Nodes.Any(n => n.Id.Equals(previousCandidate, StringComparison.OrdinalIgnoreCase)))
             previousNodeId = null;
 
         graph.UpdatedUtc = DateTime.UtcNow;
