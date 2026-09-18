@@ -56,6 +56,8 @@ public sealed class MainForm : Form
     private DateTime _lastSpoken = DateTime.MinValue;
     private int _lastCueIndex = -1;
     private CancellationTokenSource? _planCts;
+    private CancellationTokenSource? _autoRoadCts;
+    private bool _autoExtractingRoads;
 
     public MainForm()
     {
@@ -83,6 +85,7 @@ public sealed class MainForm : Form
             _tts.Dispose();
             _overlay.Close();
             _planCts?.Cancel();
+            _autoRoadCts?.Cancel();
         };
     }
 
@@ -531,6 +534,8 @@ public sealed class MainForm : Form
 
     private async Task SwitchMapAsync()
     {
+        _autoRoadCts?.Cancel();
+
         if (_traceLearning.IsRecording)
         {
             _traceLearning.Cancel();
@@ -859,7 +864,7 @@ public sealed class MainForm : Form
 
     private async Task AutoExtractRoadsAsync(bool force)
     {
-        if (string.IsNullOrWhiteSpace(_map.Text))
+        if (_autoExtractingRoads || string.IsNullOrWhiteSpace(_map.Text))
             return;
 
         if (!force &&
@@ -867,16 +872,24 @@ public sealed class MainForm : Form
                 e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)))
             return;
 
+        var mapId = _map.Text;
+        _autoExtractingRoads = true;
         _autoRoadButton.Enabled = false;
+
+        _autoRoadCts?.Cancel();
+        _autoRoadCts?.Dispose();
+        _autoRoadCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
 
         try
         {
             UpdateRoadGraphStatus("正在分析真实地图道路概率…");
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             var result = await _autoRoadExtractor.ExtractAsync(
-                _map.Text,
-                cts.Token);
+                mapId,
+                _autoRoadCts.Token);
+
+            if (!_map.Text.Equals(mapId, StringComparison.OrdinalIgnoreCase))
+                return;
 
             _roadGraphs.ReplaceAutoGraph(
                 _currentRoadGraph,
@@ -903,6 +916,7 @@ public sealed class MainForm : Form
         }
         finally
         {
+            _autoExtractingRoads = false;
             _autoRoadButton.Enabled = true;
         }
     }
