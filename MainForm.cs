@@ -62,6 +62,8 @@ public sealed class MainForm : Form
     private bool _roadEditMode;
     private string? _roadEditPreviousNodeId;
     private MapPoint? _lastLivePoint;
+    private MapPoint? _pendingTargetPoint;
+    private int _pendingTargetSamples;
     private double? _headingDeg;
     private bool _live;
     private DateTime _lastSpoken = DateTime.MinValue;
@@ -950,11 +952,15 @@ public sealed class MainForm : Form
         var point = await ReadRegionAsync(_settings.TargetRegion);
         if (point is not MapPoint value) return;
 
+        _pendingTargetPoint = null;
+        _pendingTargetSamples = 0;
         SetTarget(value);
         await PlanRouteAsync(false);
     }
 
-    private async Task<MapPoint?> ReadRegionAsync(NormalizedRegion region)
+    private async Task<MapPoint?> ReadRegionAsync(
+        NormalizedRegion region,
+        bool silent = false)
     {
         try
         {
@@ -963,9 +969,15 @@ public sealed class MainForm : Form
 
             if (!result.Success)
             {
-                _routeSummary.Text =
-                    "识别失败：" + result.Error +
-                    (string.IsNullOrWhiteSpace(result.RawText) ? "" : " [" + result.RawText + "]");
+                if (!silent)
+                {
+                    _routeSummary.Text =
+                        "识别失败：" + result.Error +
+                        (string.IsNullOrWhiteSpace(result.RawText)
+                            ? ""
+                            : " [" + result.RawText + "]");
+                }
+
                 return null;
             }
 
@@ -973,7 +985,10 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _routeSummary.Text = "截屏/OCR失败：" + ex.Message;
+            if (!silent)
+                _routeSummary.Text =
+                    "截屏/OCR失败：" + ex.Message;
+
             return null;
         }
     }
@@ -1031,7 +1046,9 @@ public sealed class MainForm : Form
         {
         if (!_live && !_traceLearning.IsRecording) return;
         
-                var current = await ReadRegionAsync(_settings.PlayerRegion);
+                var current = await ReadRegionAsync(
+                    _settings.PlayerRegion,
+                    silent: true);
                 if (current is not MapPoint now) return;
         
                 if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
@@ -1056,16 +1073,48 @@ public sealed class MainForm : Form
                     return;
                 }
         
-                if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
+                if (_settings.AutoReadTarget &&
+                    _settings.TargetRegion.IsValid)
                 {
-                    var target = await ReadRegionAsync(_settings.TargetRegion);
+                    var target = await ReadRegionAsync(
+                        _settings.TargetRegion,
+                        silent: true);
+
                     if (target is MapPoint targetPoint)
                     {
-                        if (!TryPoint(_targetX, _targetY, out var oldTarget) ||
-                            oldTarget.DistanceMeters(targetPoint) > 12)
+                        var changed =
+                            !TryPoint(
+                                _targetX,
+                                _targetY,
+                                out var oldTarget) ||
+                            oldTarget.DistanceMeters(
+                                targetPoint) > 12;
+
+                        if (!changed)
                         {
-                            SetTarget(targetPoint);
-                            await PlanRouteAsync(false);
+                            _pendingTargetPoint = null;
+                            _pendingTargetSamples = 0;
+                        }
+                        else
+                        {
+                            if (_pendingTargetPoint is MapPoint pending &&
+                                pending.DistanceMeters(targetPoint) <= 20)
+                            {
+                                _pendingTargetSamples++;
+                            }
+                            else
+                            {
+                                _pendingTargetPoint = targetPoint;
+                                _pendingTargetSamples = 1;
+                            }
+
+                            if (_pendingTargetSamples >= 2)
+                            {
+                                SetTarget(targetPoint);
+                                _pendingTargetPoint = null;
+                                _pendingTargetSamples = 0;
+                                await PlanRouteAsync(false);
+                            }
                         }
                     }
                 }
