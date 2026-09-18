@@ -142,6 +142,7 @@ public sealed class NavigationLearningSession
             Replans = _replans,
             MaxDeviationMeters = _maxDeviation,
             EdgeIds = _route.EdgeIds
+                .Concat(_edgeObservations.Keys)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList(),
             EdgeObservations = _edgeObservations.Values
