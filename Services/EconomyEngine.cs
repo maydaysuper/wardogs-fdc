@@ -93,9 +93,10 @@ public sealed class EconomyEngine
 
     public EconomicPlan? PickBest(IEnumerable<EconomicPlan> plans)
     {
-        var list = plans.ToList();
-        var cargo = list.Where(p => p.Pallets > 0).ToList();
-        return (cargo.Count > 0 ? cargo : list).FirstOrDefault();
+        return plans
+            .OrderByDescending(p => p.SessionNet)
+            .ThenByDescending(p => p.SessionPerMinute)
+            .FirstOrDefault();
     }
 
     private static IEnumerable<LoadMode> ModesFor(VehicleSpec v)
