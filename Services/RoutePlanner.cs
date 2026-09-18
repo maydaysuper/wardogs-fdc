@@ -9,10 +9,16 @@ namespace WardogsNavigator.Services;
 public sealed class RoutePlanner
 {
     private readonly MapAssetService _assets;
+    private readonly RoadGraphStore _roadGraphs;
+    private readonly RoadGraphRouter _graphRouter = new();
     private readonly Dictionary<string, float[]> _costCache = new(StringComparer.OrdinalIgnoreCase);
     private const int Grid = 384;
 
-    public RoutePlanner(MapAssetService assets) => _assets = assets;
+    public RoutePlanner(MapAssetService assets, RoadGraphStore? roadGraphs = null)
+    {
+        _assets = assets;
+        _roadGraphs = roadGraphs ?? new RoadGraphStore();
+    }
 
     public async Task<RoutePlan> PlanAsync(
         string mapId,
@@ -28,6 +34,29 @@ public sealed class RoutePlanner
 
         try
         {
+            var graph = _roadGraphs.Load(mapId);
+            var graphRoute = _graphRouter.TryPlan(graph, start, end, preference);
+
+            if (graphRoute != null && graphRoute.Points.Count >= 2)
+            {
+                return new RoutePlan
+                {
+                    MapId = mapId,
+                    Preference = preference,
+                    Points = graphRoute.Points,
+                    DistanceKm = graphRoute.DistanceKm,
+                    EstimatedMinutes = speedKmh > 1
+                        ? graphRoute.DistanceKm / speedKmh * 60.0
+                        : 0,
+                    Source =
+                        "road-graph " +
+                        Math.Round(graphRoute.Confidence * 100).ToString("F0") +
+                        "% · " +
+                        graphRoute.EdgeCount +
+                        " edges"
+                };
+            }
+
             var mapPath = await _assets.GetMapWebpPathAsync(mapId, cancellationToken);
             var costs = GetOrBuildCosts(mapPath, mapId, preference);
             var points = await Task.Run(() => AStar(costs, start, end, cancellationToken), cancellationToken);
