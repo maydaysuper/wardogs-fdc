@@ -1879,10 +1879,15 @@ public sealed class MainForm : Form
                     return;
                 }
 
+                var navigationSpeedKmh =
+                    visualMode
+                        ? _visualTracker.LastState.SpeedKmh
+                        : _positionFilter.LastSpeedKmh;
+
                 var cue = _guidance.BuildCue(
                     now,
                     _headingDeg,
-                    _positionFilter.LastSpeedKmh);
+                    navigationSpeedKmh);
 
                 if (cue.ShouldReroute &&
                     DateTime.UtcNow - _lastRerouteUtc >=
