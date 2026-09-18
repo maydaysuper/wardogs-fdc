@@ -87,10 +87,17 @@ public sealed class NavigationCue
 {
     public string Instruction { get; set; } = "";
     public double RemainingKm { get; set; }
+    public double RemainingMinutes { get; set; }
     public double NextDistanceMeters { get; set; }
     public double DesiredBearingDeg { get; set; }
+    public double Progress01 { get; set; }
+    public double DeviationMeters { get; set; }
+    public bool OffRoute { get; set; }
+    public bool ShouldReroute { get; set; }
     public bool Arrived { get; set; }
     public int RouteIndex { get; set; }
+    public NavigationManeuverKind ManeuverKind { get; set; } =
+        NavigationManeuverKind.Continue;
 }
 
 public sealed class FireSolution
