@@ -648,6 +648,310 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void Guidance_BuildsRightTurnManeuver()
+    {
+        var points = new List<MapPoint>
+        {
+            new(10, 10),
+            new(10, 12),
+            new(12, 12),
+            new(14, 12)
+        };
+
+        var maneuvers =
+            NavigationGuidance.BuildManeuvers(points);
+
+        var turn = Assert.Single(
+            maneuvers.Where(x =>
+                x.Kind ==
+                NavigationManeuverKind.TurnRight));
+
+        Assert.Equal(1, turn.RoutePointIndex);
+        Assert.InRange(turn.TurnDegrees, 89, 91);
+    }
+
+    [Fact]
+    public void Guidance_SingleOcrJumpDoesNotImmediatelyReroute()
+    {
+        var route = new RoutePlan
+        {
+            MapId = "test",
+            DistanceKm = 1.0,
+            EstimatedMinutes = 1.0,
+            Points = new List<MapPoint>
+            {
+                new(10, 10),
+                new(20, 10)
+            }
+        };
+
+        var tracker =
+            new NavigationGuidanceTracker();
+        tracker.Reset(route);
+
+        var first =
+            tracker.BuildCue(
+                new MapPoint(12, 10.80));
+
+        Assert.True(first.OffRoute);
+        Assert.False(first.ShouldReroute);
+
+        var recovered =
+            tracker.BuildCue(
+                new MapPoint(12.5, 10.05));
+
+        Assert.False(recovered.ShouldReroute);
+        Assert.False(recovered.OffRoute);
+    }
+
+    [Fact]
+    public void Guidance_PersistentDeviationTriggersReroute()
+    {
+        var route = new RoutePlan
+        {
+            MapId = "test",
+            DistanceKm = 1.0,
+            EstimatedMinutes = 1.0,
+            Points = new List<MapPoint>
+            {
+                new(10, 10),
+                new(20, 10)
+            }
+        };
+
+        var tracker =
+            new NavigationGuidanceTracker();
+        tracker.Reset(route);
+
+        var first =
+            tracker.BuildCue(
+                new MapPoint(12, 10.80));
+
+        var second =
+            tracker.BuildCue(
+                new MapPoint(12.5, 10.82));
+
+        Assert.False(first.ShouldReroute);
+        Assert.True(second.ShouldReroute);
+        Assert.True(second.DeviationMeters >= 75);
+    }
+
+    [Fact]
+    public void Guidance_TracksProgressAndDynamicEta()
+    {
+        var route = new RoutePlan
+        {
+            MapId = "test",
+            DistanceKm = 1.0,
+            EstimatedMinutes = 2.0,
+            Points = new List<MapPoint>
+            {
+                new(10, 10),
+                new(20, 10)
+            }
+        };
+
+        var tracker =
+            new NavigationGuidanceTracker();
+        tracker.Reset(route);
+
+        var cue =
+            tracker.BuildCue(
+                new MapPoint(15, 10));
+
+        Assert.InRange(cue.Progress01, 0.49, 0.51);
+        Assert.InRange(cue.RemainingKm, 0.49, 0.51);
+        Assert.InRange(cue.RemainingMinutes, 0.99, 1.01);
+    }
+
+    [Fact]
+    public void RealDriving_LearnsVehicleSpeedWithoutAiLayer()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new()
+                {
+                    Id = "a",
+                    Position = new MapPoint(10, 10)
+                },
+                new()
+                {
+                    Id = "b",
+                    Position = new MapPoint(11, 10)
+                }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new()
+                {
+                    Id = "ab",
+                    A = "a",
+                    B = "b",
+                    Class = RoadClass.Primary,
+                    Verified = true
+                }
+            }
+        };
+
+        var experience =
+            new NavigationExperience
+            {
+                MapId = "test",
+                VehicleId = "ural",
+                VehicleBaseSpeedKmh = 79,
+                Completed = true,
+                EdgeObservations =
+                    new List<EdgeTravelObservation>
+                    {
+                        new()
+                        {
+                            EdgeId = "ab",
+                            Samples = 6,
+                            DistanceKm = 0.10,
+                            Seconds = 8,
+                            MaxDeviationMeters = 12
+                        }
+                    }
+            };
+
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store =
+                new RoadGraphStore(temp);
+
+            Assert.Equal(
+                1,
+                store.RecordNavigationExperience(
+                    graph,
+                    experience));
+
+            var edge = Assert.Single(
+                graph.Edges);
+
+            Assert.True(
+                edge.LocalVehicleSpeedMultipliers
+                    .ContainsKey("ural"));
+
+            Assert.InRange(
+                edge.LocalVehicleSpeedMultipliers["ural"],
+                0.55,
+                0.70);
+
+            store.ApplyAiSuggestions(
+                graph,
+                new[]
+                {
+                    new AiRoadSuggestion
+                    {
+                        EdgeId = "ab",
+                        VehicleId = "ural",
+                        SpeedMultiplier = 0.90,
+                        Confidence = 0.95
+                    }
+                });
+
+            Assert.Equal(
+                1,
+                store.RemoveAiLearning(graph));
+
+            Assert.True(
+                edge.LocalVehicleSpeedMultipliers
+                    .ContainsKey("ural"));
+
+            Assert.False(
+                edge.VehicleSpeedMultipliers
+                    .ContainsKey("ural"));
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void LearnedSlowRoadCanChangeFastestRoute()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
+                new() { Id = "s", Position = new MapPoint(10, 10) },
+                new() { Id = "short", Position = new MapPoint(12, 10) },
+                new() { Id = "long", Position = new MapPoint(12, 11.5) },
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
+                new()
+                {
+                    Id = "short-a",
+                    A = "s",
+                    B = "short",
+                    Class = RoadClass.Primary,
+                    Verified = true,
+                    LocalVehicleSpeedMultipliers =
+                        new Dictionary<string, double>
+                        {
+                            ["ural"] = 0.55
+                        }
+                },
+                new()
+                {
+                    Id = "short-b",
+                    A = "short",
+                    B = "e",
+                    Class = RoadClass.Primary,
+                    Verified = true,
+                    LocalVehicleSpeedMultipliers =
+                        new Dictionary<string, double>
+                        {
+                            ["ural"] = 0.55
+                        }
+                },
+                new() { Id = "long-a", A = "s", B = "long", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "long-b", A = "long", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
+            }
+        };
+
+        var profile =
+            VehicleRoutingProfileService
+                .ForVehicleId("ural");
+
+        var route =
+            new RoadGraphRouter().TryPlan(
+                graph,
+                new MapPoint(9.1, 10),
+                new MapPoint(14.9, 10),
+                RoutePreference.Fastest,
+                profile);
+
+        Assert.NotNull(route);
+        Assert.Contains(
+            "long-a",
+            route!.EdgeIds);
+        Assert.Contains(
+            "long-b",
+            route.EdgeIds);
+        Assert.DoesNotContain(
+            "short-a",
+            route.EdgeIds);
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]
