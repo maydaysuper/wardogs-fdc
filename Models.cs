@@ -96,6 +96,7 @@ public sealed class NavigationCue
     public bool ShouldReroute { get; set; }
     public bool Arrived { get; set; }
     public int RouteIndex { get; set; }
+    public int ManeuverRoutePointIndex { get; set; } = -1;
     public NavigationManeuverKind ManeuverKind { get; set; } =
         NavigationManeuverKind.Continue;
 }
