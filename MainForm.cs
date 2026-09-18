@@ -65,6 +65,7 @@ public sealed class MainForm : Form
     private bool _live;
     private DateTime _lastSpoken = DateTime.MinValue;
     private int _lastCueIndex = -1;
+    private string _lastSpokenCueKey = "";
     private CancellationTokenSource? _planCts;
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
@@ -760,6 +761,8 @@ public sealed class MainForm : Form
         _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
+        _mapCanvas.SetGuidance(null);
+        _guidance.Reset(null);
         UpdateHazards();
         UpdateVisionEvidence();
         UpdateRoadGraphStatus();
@@ -838,6 +841,7 @@ public sealed class MainForm : Form
                 token);
 
             _guidance.Reset(_route);
+            _lastSpokenCueKey = "";
 
             if (_navigationLearning.IsActive)
             {
@@ -870,10 +874,19 @@ public sealed class MainForm : Form
                 fire.DirectionMils.ToString("F0") + " mil";
 
             _overlay.UpdateCue(cue, _route);
+            _mapCanvas.SetGuidance(cue);
             UpdateMapState();
 
             if (speak && _settings.SpeakNavigation)
-                Speak(cue.Instruction + "。全程 " + _route.DistanceKm.ToString("F1") + " 公里。");
+            {
+                _lastSpokenCueKey = CueSpeechKey(cue);
+                _lastSpoken = DateTime.UtcNow;
+                Speak(
+                    cue.Instruction +
+                    "。全程 " +
+                    _route.DistanceKm.ToString("F1") +
+                    " 公里。");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -1046,20 +1059,43 @@ public sealed class MainForm : Form
                 }
 
                 _overlay.UpdateCue(cue, _route);
+                _mapCanvas.SetGuidance(cue);
                 UpdateMapState();
-        
+
+                _routeSummary.Text =
+                    "导航：剩余 " +
+                    cue.RemainingKm.ToString("F2") +
+                    " km · ETA " +
+                    cue.RemainingMinutes.ToString("F1") +
+                    " min\r\n" +
+                    cue.Instruction +
+                    " · 偏差 " +
+                    cue.DeviationMeters.ToString("F0") +
+                    " m";
+
+                var cueKey = CueSpeechKey(cue);
+                var promptWindow =
+                    cue.NextDistanceMeters <= 260 ||
+                    DateTime.UtcNow - _lastSpoken >
+                        TimeSpan.FromSeconds(35);
+
                 if (_settings.SpeakNavigation &&
                     !cue.Arrived &&
-                    (cue.RouteIndex != _lastCueIndex ||
-                     DateTime.UtcNow - _lastSpoken > TimeSpan.FromSeconds(20)))
+                    !cue.OffRoute &&
+                    cueKey != _lastSpokenCueKey &&
+                    promptWindow)
                 {
+                    _lastSpokenCueKey = cueKey;
                     _lastCueIndex = cue.RouteIndex;
                     _lastSpoken = DateTime.UtcNow;
                     Speak(cue.Instruction);
                 }
-                else if (cue.Arrived && cue.RouteIndex != _lastCueIndex)
+                else if (cue.Arrived &&
+                         _lastSpokenCueKey != "arrive")
                 {
+                    _lastSpokenCueKey = "arrive";
                     _lastCueIndex = cue.RouteIndex;
+                    _lastSpoken = DateTime.UtcNow;
                     Speak("已到达目的地");
                 }
         
@@ -1796,6 +1832,7 @@ public sealed class MainForm : Form
             " · 已验证 " + stats.VerifiedEdges +
             " · 实车学习 " + stats.LearnedEdges +
             " · 自动 " + stats.AutoEdges +
+            " · 实车速度学习 " + stats.LocalSpeedLearnedEdges +
             " · AI学习 " + stats.AiLearnedEdges +
             "\r\n网络总长 " +
             stats.NetworkKm.ToString("F2") +
@@ -1842,6 +1879,29 @@ public sealed class MainForm : Form
         MapPoint? self = TryPoint(_selfX, _selfY, out var s) ? s : null;
         MapPoint? target = TryPoint(_targetX, _targetY, out var t) ? t : null;
         _mapCanvas.SetState(self, target, _route);
+    }
+
+
+    private static string CueSpeechKey(
+        NavigationCue cue)
+    {
+        if (cue.Arrived)
+            return "arrive";
+
+        var bucket = cue.NextDistanceMeters switch
+        {
+            <= 30 => 0,
+            <= 80 => 1,
+            <= 260 => 2,
+            _ => 3
+        };
+
+        return
+            cue.ManeuverRoutePointIndex +
+            ":" +
+            cue.ManeuverKind +
+            ":" +
+            bucket;
     }
 
     private void Speak(string text)
