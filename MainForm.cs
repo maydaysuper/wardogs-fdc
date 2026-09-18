@@ -14,6 +14,7 @@ public sealed class MainForm : Form
     private readonly EconomyEngine _economy = new();
     private readonly RoadGraphStore _roadGraphs = new();
     private readonly TraceLearningService _traceLearning = new();
+    private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -41,6 +42,7 @@ public sealed class MainForm : Form
     private readonly Label _roadGraphStatus = new();
     private readonly Button _roadEditButton = new();
     private readonly Button _roadLearnButton = new();
+    private readonly Button _autoRoadButton = new();
     private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1400 };
 
     private RoutePlan? _route;
@@ -58,6 +60,7 @@ public sealed class MainForm : Form
     public MainForm()
     {
         _routes = new RoutePlanner(_mapAssets, _roadGraphs);
+        _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
@@ -244,6 +247,35 @@ public sealed class MainForm : Form
         var tab = NewTab("道路校准");
         var p = Flow();
 
+        p.Controls.Add(Header("自动地图道路识别"));
+
+        _autoRoadButton.Text = "自动分析当前地图";
+        _autoRoadButton.AutoSize = true;
+        _autoRoadButton.BackColor = Color.FromArgb(42, 48, 58);
+        _autoRoadButton.ForeColor = Color.White;
+        _autoRoadButton.FlatStyle = FlatStyle.Flat;
+        _autoRoadButton.Click += async (_, _) => await AutoExtractRoadsAsync(force: true);
+        p.Controls.Add(_autoRoadButton);
+
+        var removeAuto = Btn("删除自动道路");
+        removeAuto.Click += (_, _) =>
+        {
+            var removed = _roadGraphs.RemoveAutoGraph(_currentRoadGraph);
+            SaveRoadGraph();
+            UpdateRoadGraphStatus("已删除 " + removed + " 条自动道路；手工/实车道路保留。");
+        };
+        p.Controls.Add(removeAuto);
+
+        p.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Width = 400,
+            Height = 78,
+            ForeColor = Color.Silver,
+            Text =
+                "自动识别会分析当前真实地图的道路概率并生成初始 Road Graph。自动边为虚线且未验证；不会覆盖手工或实车学习道路。"
+        });
+
         p.Controls.Add(Header("Road Graph 精确道路层"));
 
         _roadClass.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -337,7 +369,7 @@ public sealed class MainForm : Form
             Text =
                 "手工点路：开启后，在左侧真实地图上沿道路依次点击；每个点击都会生成/吸附道路节点并立即保存。\r\n\r\n" +
                 "实车学习：只读取已校准的屏幕坐标。开车时每次有效位置变化都会记录；停止后自动去抖、简化并合并到 Road Graph。\r\n\r\n" +
-                "导航优先级：精确 Road Graph → 地图像素 A* → 直线回退。"
+                "导航优先级：已验证/实车 Road Graph → 自动 Road Graph → 地图像素 A* → 直线回退。"
         });
 
         tab.Controls.Add(p);
@@ -515,6 +547,12 @@ public sealed class MainForm : Form
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
         UpdateRoadGraphStatus();
         UpdateMapState();
+
+        if (!_currentRoadGraph.Edges.Any(e =>
+                e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)))
+        {
+            await AutoExtractRoadsAsync(force: false);
+        }
     }
 
     private void RunEconomy()
@@ -817,6 +855,57 @@ public sealed class MainForm : Form
         UpdateCalibrationStatus();
     }
 
+
+
+    private async Task AutoExtractRoadsAsync(bool force)
+    {
+        if (string.IsNullOrWhiteSpace(_map.Text))
+            return;
+
+        if (!force &&
+            _currentRoadGraph.Edges.Any(e =>
+                e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        _autoRoadButton.Enabled = false;
+
+        try
+        {
+            UpdateRoadGraphStatus("正在分析真实地图道路概率…");
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var result = await _autoRoadExtractor.ExtractAsync(
+                _map.Text,
+                cts.Token);
+
+            _roadGraphs.ReplaceAutoGraph(
+                _currentRoadGraph,
+                result.Graph);
+
+            SaveRoadGraph();
+
+            UpdateRoadGraphStatus(
+                "自动识别完成：节点 " +
+                result.AcceptedNodes +
+                " · 边 " +
+                result.AcceptedEdges +
+                " · 平均置信 " +
+                Math.Round(result.AverageScore * 100).ToString("F0") +
+                "%");
+        }
+        catch (OperationCanceledException)
+        {
+            UpdateRoadGraphStatus("自动道路识别超时/取消；保留现有 Road Graph。");
+        }
+        catch (Exception ex)
+        {
+            UpdateRoadGraphStatus("自动道路识别失败：" + ex.Message);
+        }
+        finally
+        {
+            _autoRoadButton.Enabled = true;
+        }
+    }
 
     private RoadClass SelectedRoadClass()
     {
