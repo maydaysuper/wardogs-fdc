@@ -19,6 +19,8 @@ public sealed class AppSettings
     public string DeepSeekModel { get; set; } = "deepseek-flash";
     public bool SpeakNavigation { get; set; } = true;
     public bool AutoReadTarget { get; set; } = true;
+    public bool AiAutoApplyNavigationLearning { get; set; }
+    public double AiLearningMinConfidence { get; set; } = 0.82;
     public RoutePreference RoutePreference { get; set; } = RoutePreference.Fastest;
     public NormalizedRegion PlayerRegion { get; set; } = new();
     public NormalizedRegion TargetRegion { get; set; } = new();
