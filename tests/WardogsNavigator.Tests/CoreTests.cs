@@ -952,6 +952,273 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void PositionFilter_RejectsSingleLargeOcrJump()
+    {
+        var filter =
+            new NavigationPositionFilter();
+
+        var t0 =
+            new DateTime(
+                2026,
+                9,
+                18,
+                0,
+                0,
+                0,
+                DateTimeKind.Utc);
+
+        Assert.True(
+            filter.TryAccept(
+                new MapPoint(10, 10),
+                t0,
+                out var first));
+
+        Assert.Equal(
+            10,
+            first.X,
+            6);
+
+        Assert.False(
+            filter.TryAccept(
+                new MapPoint(50, 50),
+                t0.AddSeconds(1),
+                out _));
+
+        Assert.True(
+            filter.TryAccept(
+                new MapPoint(10.20, 10.01),
+                t0.AddSeconds(2),
+                out var recovered));
+
+        Assert.InRange(
+            recovered.X,
+            10.0,
+            10.2);
+
+        Assert.Equal(
+            1,
+            filter.RejectedSamples);
+    }
+
+    [Fact]
+    public void PositionFilter_ReanchorsAfterThreeConsistentLargeMoves()
+    {
+        var filter =
+            new NavigationPositionFilter();
+
+        var t0 =
+            new DateTime(
+                2026,
+                9,
+                18,
+                0,
+                0,
+                0,
+                DateTimeKind.Utc);
+
+        Assert.True(
+            filter.TryAccept(
+                new MapPoint(10, 10),
+                t0,
+                out _));
+
+        Assert.False(
+            filter.TryAccept(
+                new MapPoint(30, 30),
+                t0.AddSeconds(1),
+                out _));
+
+        Assert.False(
+            filter.TryAccept(
+                new MapPoint(30.02, 30.01),
+                t0.AddSeconds(2),
+                out _));
+
+        Assert.True(
+            filter.TryAccept(
+                new MapPoint(30.01, 30.02),
+                t0.AddSeconds(3),
+                out var reanchored));
+
+        Assert.InRange(
+            reanchored.X,
+            30.0,
+            30.1);
+    }
+
+    [Fact]
+    public void LocalSpeedLearning_GainsConfidenceAcrossTrips()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new()
+                {
+                    Id = "a",
+                    Position = new MapPoint(10, 10)
+                },
+                new()
+                {
+                    Id = "b",
+                    Position = new MapPoint(11, 10)
+                }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new()
+                {
+                    Id = "ab",
+                    A = "a",
+                    B = "b",
+                    Class = RoadClass.Primary,
+                    Verified = true
+                }
+            }
+        };
+
+        var experience = new NavigationExperience
+        {
+            MapId = "test",
+            VehicleId = "ural",
+            VehicleBaseSpeedKmh = 79,
+            Completed = true,
+            EdgeObservations =
+                new List<EdgeTravelObservation>
+                {
+                    new()
+                    {
+                        EdgeId = "ab",
+                        Samples = 8,
+                        DistanceKm = 0.10,
+                        Seconds = 8,
+                        MaxDeviationMeters = 8
+                    }
+                }
+        };
+
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store =
+                new RoadGraphStore(temp);
+
+            store.RecordNavigationExperience(
+                graph,
+                experience);
+
+            var state1 =
+                graph.Edges[0]
+                    .LocalVehicleSpeedLearning["ural"];
+
+            var confidence1 =
+                state1.Confidence;
+
+            Assert.InRange(
+                confidence1,
+                0.10,
+                0.70);
+
+            store.RecordNavigationExperience(
+                graph,
+                experience);
+
+            var state2 =
+                graph.Edges[0]
+                    .LocalVehicleSpeedLearning["ural"];
+
+            Assert.True(
+                state2.Confidence >
+                confidence1);
+
+            Assert.Equal(
+                2,
+                state2.ObservationCount);
+
+            Assert.InRange(
+                state2.MeanMultiplier,
+                0.55,
+                0.75);
+        }
+        finally
+        {
+            Directory.Delete(
+                temp,
+                true);
+        }
+    }
+
+    [Fact]
+    public void FastestRoute_PrefersSmootherPathWhileShortestKeepsDistance()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
+                new() { Id = "s", Position = new MapPoint(10, 10) },
+                new() { Id = "smooth", Position = new MapPoint(12, 11.5) },
+                new() { Id = "zig1", Position = new MapPoint(11.5, 9.4) },
+                new() { Id = "zig2", Position = new MapPoint(12.5, 10.6) },
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "smooth-a", A = "s", B = "smooth", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "smooth-b", A = "smooth", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "zig-a", A = "s", B = "zig1", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "zig-b", A = "zig1", B = "zig2", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "zig-c", A = "zig2", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
+            }
+        };
+
+        var router =
+            new RoadGraphRouter();
+
+        var shortest =
+            router.TryPlan(
+                graph,
+                new MapPoint(9.1, 10),
+                new MapPoint(14.9, 10),
+                RoutePreference.Shortest,
+                VehicleRoutingProfileService.Generic());
+
+        var fastest =
+            router.TryPlan(
+                graph,
+                new MapPoint(9.1, 10),
+                new MapPoint(14.9, 10),
+                RoutePreference.Fastest,
+                VehicleRoutingProfileService.Generic());
+
+        Assert.NotNull(shortest);
+        Assert.NotNull(fastest);
+
+        Assert.Contains(
+            "zig-b",
+            shortest!.EdgeIds);
+
+        Assert.Contains(
+            "smooth-a",
+            fastest!.EdgeIds);
+
+        Assert.DoesNotContain(
+            "zig-b",
+            fastest.EdgeIds);
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]
