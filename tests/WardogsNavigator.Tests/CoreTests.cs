@@ -84,6 +84,121 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void AutoRoadMerge_PreservesManualAndTraceData()
+    {
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store = new RoadGraphStore(temp);
+            var graph = new RoadGraph
+            {
+                MapId = "test",
+                Nodes = new List<RoadNode>
+                {
+                    new() { Id = "m1", Position = new MapPoint(10, 10) },
+                    new() { Id = "m2", Position = new MapPoint(11, 10) }
+                },
+                Edges = new List<RoadEdge>
+                {
+                    new()
+                    {
+                        Id = "manual-edge",
+                        A = "m1",
+                        B = "m2",
+                        Source = "manual",
+                        Verified = true
+                    }
+                }
+            };
+
+            var auto = new RoadGraph
+            {
+                MapId = "test",
+                Nodes = new List<RoadNode>
+                {
+                    new() { Id = "a1", Position = new MapPoint(20, 20) },
+                    new() { Id = "a2", Position = new MapPoint(21, 20) }
+                },
+                Edges = new List<RoadEdge>
+                {
+                    new()
+                    {
+                        Id = "auto-edge",
+                        A = "a1",
+                        B = "a2",
+                        Source = "auto",
+                        Verified = false,
+                        AutoScore = 0.75
+                    }
+                }
+            };
+
+            store.ReplaceAutoGraph(graph, auto);
+
+            Assert.Contains(graph.Edges, e => e.Id == "manual-edge");
+            Assert.Contains(graph.Edges, e => e.Source == "auto");
+
+            store.ReplaceAutoGraph(
+                graph,
+                new RoadGraph { MapId = "test" });
+
+            Assert.Contains(graph.Edges, e => e.Id == "manual-edge");
+            Assert.DoesNotContain(graph.Edges, e => e.Source == "auto");
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void DrivenTrace_UpgradesAutoEdge()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "a", Position = new MapPoint(10, 10) },
+                new() { Id = "b", Position = new MapPoint(11, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new()
+                {
+                    Id = "auto",
+                    A = "a",
+                    B = "b",
+                    Source = "auto",
+                    Verified = false,
+                    AutoScore = 0.78
+                }
+            }
+        };
+
+        RoadGraphStore.AddOrTouchEdge(
+            graph,
+            "a",
+            "b",
+            RoadClass.Secondary,
+            "trace",
+            true,
+            incrementTraversal: true);
+
+        var edge = Assert.Single(graph.Edges);
+        Assert.Equal("trace", edge.Source);
+        Assert.True(edge.Verified);
+        Assert.Equal(1, edge.Traversals);
+        Assert.Equal(0, edge.AutoScore);
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]
