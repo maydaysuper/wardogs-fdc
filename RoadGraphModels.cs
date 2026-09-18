@@ -24,6 +24,7 @@ public sealed class RoadEdge
     public bool Verified { get; set; } = true;
     public double Risk { get; set; }
     public int Traversals { get; set; }
+    public double AutoScore { get; set; }
     public string Source { get; set; } = "manual";
 }
 
@@ -42,6 +43,7 @@ public sealed class RoadGraphStats
     public int Edges { get; set; }
     public int VerifiedEdges { get; set; }
     public int LearnedEdges { get; set; }
+    public int AutoEdges { get; set; }
     public double NetworkKm { get; set; }
 }
 

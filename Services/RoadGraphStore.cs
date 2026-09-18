@@ -77,6 +77,7 @@ public sealed class RoadGraphStore
             Edges = graph.Edges.Count,
             VerifiedEdges = graph.Edges.Count(e => e.Verified && !e.Blocked),
             LearnedEdges = graph.Edges.Count(e => e.Source.Equals("trace", StringComparison.OrdinalIgnoreCase)),
+            AutoEdges = graph.Edges.Count(e => e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)),
             NetworkKm = meters / 1000.0
         };
     }
@@ -105,6 +106,78 @@ public sealed class RoadGraphStore
         }
 
         graph.UpdatedUtc = DateTime.UtcNow;
+    }
+
+
+    public void ReplaceAutoGraph(RoadGraph graph, RoadGraph autoGraph)
+    {
+        // Remove only previous automatic edges. Manual and driven/trace edges are preserved.
+        graph.Edges.RemoveAll(e =>
+            e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase));
+
+        PruneUnusedNodes(graph);
+
+        var nodeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var autoNode in autoGraph.Nodes)
+        {
+            var target = FindOrCreateNode(graph, autoNode.Position, 34.0);
+            nodeMap[autoNode.Id] = target.Id;
+        }
+
+        foreach (var autoEdge in autoGraph.Edges)
+        {
+            if (!nodeMap.TryGetValue(autoEdge.A, out var a) ||
+                !nodeMap.TryGetValue(autoEdge.B, out var b) ||
+                a.Equals(b, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var existing = graph.Edges.FirstOrDefault(e =>
+                (e.A.Equals(a, StringComparison.OrdinalIgnoreCase) &&
+                 e.B.Equals(b, StringComparison.OrdinalIgnoreCase)) ||
+                (e.A.Equals(b, StringComparison.OrdinalIgnoreCase) &&
+                 e.B.Equals(a, StringComparison.OrdinalIgnoreCase)));
+
+            if (existing != null)
+            {
+                // Never downgrade manual/trace verification with automatic data.
+                if (existing.Source.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    existing.Class = autoEdge.Class;
+                    existing.AutoScore = Math.Max(existing.AutoScore, autoEdge.AutoScore);
+                    existing.Verified = false;
+                }
+
+                continue;
+            }
+
+            graph.Edges.Add(new RoadEdge
+            {
+                Id = "auto_e_" + Guid.NewGuid().ToString("N")[..10],
+                A = a,
+                B = b,
+                Class = autoEdge.Class,
+                Blocked = false,
+                Verified = false,
+                Risk = 0,
+                Traversals = 0,
+                AutoScore = autoEdge.AutoScore,
+                Source = "auto"
+            });
+        }
+
+        graph.Version = Math.Max(graph.Version, 3);
+        graph.UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public int RemoveAutoGraph(RoadGraph graph)
+    {
+        var removed = graph.Edges.RemoveAll(e =>
+            e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase));
+
+        PruneUnusedNodes(graph);
+        graph.UpdatedUtc = DateTime.UtcNow;
+        return removed;
     }
 
     public bool RemoveLastManualSegment(RoadGraph graph, string? currentNodeId, out string? previousNodeId)
@@ -176,8 +249,19 @@ public sealed class RoadGraphStore
         {
             existing.Verified |= verified;
             if (incrementTraversal) existing.Traversals++;
+
             if (source.Equals("manual", StringComparison.OrdinalIgnoreCase))
+            {
                 existing.Source = "manual";
+            }
+            else if (source.Equals("trace", StringComparison.OrdinalIgnoreCase) &&
+                     existing.Source.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                // A real driven trace upgrades an automatic guess into verified road data.
+                existing.Source = "trace";
+                existing.AutoScore = 0;
+            }
+
             return;
         }
 

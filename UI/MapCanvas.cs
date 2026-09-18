@@ -105,6 +105,8 @@ public sealed class MapCanvas : Control
             var p1 = ToPixel(rect, a.Position);
             var p2 = ToPixel(rect, b.Position);
 
+            var isAuto = edge.Source.Equals("auto", StringComparison.OrdinalIgnoreCase);
+
             var color = edge.Blocked
                 ? Color.FromArgb(210, 230, 70, 70)
                 : edge.Class switch
@@ -115,13 +117,22 @@ public sealed class MapCanvas : Control
                     _ => Color.FromArgb(200, 70, 145, 255)
                 };
 
-            var width = edge.Traversals > 0 ? 3.4f : 2.2f;
-            if (!edge.Verified) color = Color.FromArgb(120, color);
+            var width = edge.Traversals > 0 ? 3.4f : isAuto ? 1.6f : 2.2f;
+
+            if (isAuto)
+            {
+                var alpha = 65 + (int)(Math.Clamp(edge.AutoScore, 0, 1) * 85);
+                color = Color.FromArgb(alpha, color);
+            }
+            else if (!edge.Verified)
+            {
+                color = Color.FromArgb(120, color);
+            }
 
             using var pen = new Pen(color, width)
             {
                 LineJoin = LineJoin.Round,
-                DashStyle = edge.Blocked ? DashStyle.Dash : DashStyle.Solid
+                DashStyle = edge.Blocked || isAuto ? DashStyle.Dash : DashStyle.Solid
             };
 
             g.DrawLine(pen, p1, p2);
