@@ -148,60 +148,30 @@ public sealed class MapCanvas : Control
         var registration =
             _visualViewport;
 
-        var leftWorld =
-            registration.Left01 *
-            MapPoint.MapSize;
+        var corners =
+            registration
+                .GetMapNormalizedCorners()
+                .Select(p =>
+                    ToPixel(
+                        rect,
+                        new MapPoint(
+                            Math.Clamp(
+                                p.X,
+                                0,
+                                1) *
+                            MapPoint.MapSize,
+                            (
+                                1.0 -
+                                Math.Clamp(
+                                    p.Y,
+                                    0,
+                                    1)
+                            ) *
+                            MapPoint.MapSize)))
+                .ToArray();
 
-        var rightWorld =
-            (
-                registration.Left01 +
-                registration.Width01
-            ) *
-            MapPoint.MapSize;
-
-        var topWorld =
-            (
-                1.0 -
-                registration.Top01
-            ) *
-            MapPoint.MapSize;
-
-        var bottomWorld =
-            (
-                1.0 -
-                registration.Top01 -
-                registration.Height01
-            ) *
-            MapPoint.MapSize;
-
-        var topLeft =
-            ToPixel(
-                rect,
-                new MapPoint(
-                    leftWorld,
-                    topWorld));
-
-        var bottomRight =
-            ToPixel(
-                rect,
-                new MapPoint(
-                    rightWorld,
-                    bottomWorld));
-
-        var box =
-            Rectangle.FromLTRB(
-                Math.Min(
-                    topLeft.X,
-                    bottomRight.X),
-                Math.Min(
-                    topLeft.Y,
-                    bottomRight.Y),
-                Math.Max(
-                    topLeft.X,
-                    bottomRight.X),
-                Math.Max(
-                    topLeft.Y,
-                    bottomRight.Y));
+        if (corners.Length != 4)
+            return;
 
         using var fill =
             new SolidBrush(
@@ -224,13 +194,19 @@ public sealed class MapCanvas : Control
                     DashStyle.Dash
             };
 
-        g.FillRectangle(
+        g.FillPolygon(
             fill,
-            box);
+            corners);
 
-        g.DrawRectangle(
+        g.DrawPolygon(
             pen,
-            box);
+            corners);
+
+        var labelPoint =
+            corners
+                .OrderBy(p => p.Y)
+                .ThenBy(p => p.X)
+                .First();
 
         TextRenderer.DrawText(
             g,
@@ -239,11 +215,14 @@ public sealed class MapCanvas : Control
                 registration.Confidence *
                 100)
                 .ToString("F0") +
-            "%",
+            "% · " +
+            registration.RotationDeg
+                .ToString("+0;-0;0") +
+            "°",
             Font,
             new Point(
-                box.Left + 4,
-                box.Top + 4),
+                labelPoint.X + 4,
+                labelPoint.Y + 4),
             Color.Cyan);
 
         if (_visualTarget is MapPoint target)
