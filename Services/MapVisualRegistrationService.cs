@@ -396,7 +396,7 @@ public sealed class MapVisualRegistrationService
                                 width,
                                 height,
                                 rotation,
-                                18);
+                                22);
 
                         if (score >
                             best.Score)
@@ -646,12 +646,11 @@ public sealed class MapVisualRegistrationService
         var sin =
             Math.Sin(radians);
 
-        double sumA = 0;
-        double sumB = 0;
-        double sumAA = 0;
-        double sumBB = 0;
-        double sumAB = 0;
-        var count = 0;
+        var edgeA =
+            new RunningCorrelation();
+
+        var grayA =
+            new RunningCorrelation();
 
         for (var gy = 1;
              gy < grid - 1;
@@ -713,66 +712,134 @@ public sealed class MapVisualRegistrationService
                     mapY01 *
                     (map.Height - 1);
 
-                var a =
+                edgeA.Add(
                     screen.Edge[
                         sy *
                         screen.Width +
-                        sx];
-
-                var b =
+                        sx],
                     SampleBilinear(
                         map.Edge,
                         map.Width,
                         map.Height,
                         mx,
-                        my);
+                        my));
 
-                sumA += a;
-                sumB += b;
-                sumAA += a * a;
-                sumBB += b * b;
-                sumAB += a * b;
-                count++;
+                grayA.Add(
+                    screen.Gray[
+                        sy *
+                        screen.Width +
+                        sx],
+                    SampleBilinear(
+                        map.Gray,
+                        map.Width,
+                        map.Height,
+                        mx,
+                        my));
             }
         }
 
-        if (count <
+        var minimumSamples =
             Math.Max(
                 20,
                 (grid - 2) *
                 (grid - 2) *
-                0.82))
+                0.82);
+
+        if (edgeA.Count <
+            minimumSamples)
             return -1;
 
-        var cov =
-            sumAB -
-            sumA *
-            sumB /
-            count;
+        var edgeCorrelation =
+            edgeA.Correlation();
 
-        var varA =
-            sumAA -
-            sumA *
-            sumA /
-            count;
+        var grayCorrelation =
+            grayA.Correlation();
 
-        var varB =
-            sumBB -
-            sumB *
-            sumB /
-            count;
-
-        if (varA <= 1e-8 ||
-            varB <= 1e-8)
+        if (!double.IsFinite(
+                edgeCorrelation))
             return -1;
+
+        var combined =
+            double.IsFinite(
+                grayCorrelation)
+                ? edgeCorrelation * 0.76 +
+                  grayCorrelation * 0.24
+                : edgeCorrelation;
+
+        // Small regularization keeps an almost-identical unrotated solution
+        // ahead of a spurious heavily-rotated alias. A genuinely rotated map
+        // still wins easily through the image correlation term.
+        var rotationPenalty =
+            Math.Abs(
+                NormalizeRotation(
+                    rotationDeg)) /
+            180.0 *
+            0.018;
 
         return Math.Clamp(
-            cov /
-            Math.Sqrt(
-                varA *
-                varB),
+            combined -
+            rotationPenalty,
             -1,
             1);
+    }
+
+    private struct RunningCorrelation
+    {
+        public int Count { get; private set; }
+
+        private double _sumA;
+        private double _sumB;
+        private double _sumAA;
+        private double _sumBB;
+        private double _sumAB;
+
+        public void Add(
+            double a,
+            double b)
+        {
+            Count++;
+            _sumA += a;
+            _sumB += b;
+            _sumAA += a * a;
+            _sumBB += b * b;
+            _sumAB += a * b;
+        }
+
+        public double Correlation()
+        {
+            if (Count < 4)
+                return double.NaN;
+
+            var covariance =
+                _sumAB -
+                _sumA *
+                _sumB /
+                Count;
+
+            var varianceA =
+                _sumAA -
+                _sumA *
+                _sumA /
+                Count;
+
+            var varianceB =
+                _sumBB -
+                _sumB *
+                _sumB /
+                Count;
+
+            if (varianceA <= 1e-9 ||
+                varianceB <= 1e-9)
+                return double.NaN;
+
+            return Math.Clamp(
+                covariance /
+                Math.Sqrt(
+                    varianceA *
+                    varianceB),
+                -1,
+                1);
+        }
     }
 
     private static double SampleBilinear(
@@ -968,6 +1035,9 @@ public sealed class MapVisualRegistrationService
     {
         public int Width { get; init; }
         public int Height { get; init; }
+        public double[] Gray { get; init; } =
+            Array.Empty<double>();
+
         public double[] Edge { get; init; } =
             Array.Empty<double>();
 
@@ -1098,6 +1168,7 @@ public sealed class MapVisualRegistrationService
             {
                 Width = width,
                 Height = height,
+                Gray = gray,
                 Edge = edge
             };
         }
