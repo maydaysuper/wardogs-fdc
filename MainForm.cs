@@ -222,7 +222,7 @@ public sealed class MainForm : Form
         _economyGrid.CellDoubleClick += async (_, _) => await UseSelectedEconomicPlanAsync();
 
         host.Controls.Add(_economyGrid);
-        _economyGrid.BringToFront();
+        top.BringToFront();
 
         return tab;
     }
