@@ -63,65 +63,80 @@ public sealed class AppSettings
         try
         {
             if (File.Exists(PathName))
-            {
-                var s = JsonSerializer.Deserialize<AppSettings>(
-                    File.ReadAllText(PathName));
-
-                if (s != null)
-                {
-                    s.TargetMarkerProfile ??=
-                        new TargetMarkerProfile();
-                    s.PlayerRegion ??=
-                        new NormalizedRegion();
-                    s.TargetRegion ??=
-                        new NormalizedRegion();
-                    s.VisionMapRegion ??=
-                        new NormalizedRegion();
-                    s.VisualMapMinRegistrationConfidence =
-                        Math.Clamp(
-                            s.VisualMapMinRegistrationConfidence <= 0
-                                ? 0.42
-                                : s.VisualMapMinRegistrationConfidence,
-                            0.20,
-                            0.95);
-                    s.VisualTargetMinConfidence =
-                        Math.Clamp(
-                            s.VisualTargetMinConfidence <= 0
-                                ? 0.54
-                                : s.VisualTargetMinConfidence,
-                            0.25,
-                            0.95);
-                    s.VisualTargetScanSeconds =
-                        Math.Clamp(
-                            s.VisualTargetScanSeconds <= 0
-                                ? 3
-                                : s.VisualTargetScanSeconds,
-                            2,
-                            15);
-                    s.AiVisionCacheSeconds =
-                        Math.Clamp(
-                            s.AiVisionCacheSeconds <= 0
-                                ? 90
-                                : s.AiVisionCacheSeconds,
-                            15,
-                            600);
-                    s.AiVisionMaxImageDimension =
-                        Math.Clamp(
-                            s.AiVisionMaxImageDimension <= 0
-                                ? 1280
-                                : s.AiVisionMaxImageDimension,
-                            768,
-                            1920);
-                    if (!Enum.IsDefined(s.CaptureBackend))
-                        s.CaptureBackend = CaptureBackendMode.Auto;
-                    if (!Enum.IsDefined(s.PerformanceMode))
-                        s.PerformanceMode = RuntimePerformanceMode.Balanced;
-                    return s;
-                }
-            }
+                return FromJson(File.ReadAllText(PathName));
         }
         catch { }
+
         return new AppSettings();
+    }
+
+    public static AppSettings FromJson(string json)
+    {
+        try
+        {
+            var settings = JsonSerializer.Deserialize<AppSettings>(
+                json,
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                }) ?? new AppSettings();
+
+            Normalize(settings);
+            return settings;
+        }
+        catch
+        {
+            return new AppSettings();
+        }
+    }
+
+    private static void Normalize(AppSettings s)
+    {
+        s.TargetMarkerProfile ??= new TargetMarkerProfile();
+        s.PlayerRegion ??= new NormalizedRegion();
+        s.TargetRegion ??= new NormalizedRegion();
+        s.VisionMapRegion ??= new NormalizedRegion();
+
+        s.VisualMapMinRegistrationConfidence = Math.Clamp(
+            s.VisualMapMinRegistrationConfidence <= 0
+                ? 0.42
+                : s.VisualMapMinRegistrationConfidence,
+            0.20,
+            0.95);
+
+        s.VisualTargetMinConfidence = Math.Clamp(
+            s.VisualTargetMinConfidence <= 0
+                ? 0.54
+                : s.VisualTargetMinConfidence,
+            0.25,
+            0.95);
+
+        s.VisualTargetScanSeconds = Math.Clamp(
+            s.VisualTargetScanSeconds <= 0
+                ? 3
+                : s.VisualTargetScanSeconds,
+            2,
+            15);
+
+        s.AiVisionCacheSeconds = Math.Clamp(
+            s.AiVisionCacheSeconds <= 0
+                ? 90
+                : s.AiVisionCacheSeconds,
+            15,
+            600);
+
+        s.AiVisionMaxImageDimension = Math.Clamp(
+            s.AiVisionMaxImageDimension <= 0
+                ? 1280
+                : s.AiVisionMaxImageDimension,
+            768,
+            1920);
+
+        if (!Enum.IsDefined(s.CaptureBackend))
+            s.CaptureBackend = CaptureBackendMode.Auto;
+
+        if (!Enum.IsDefined(s.PerformanceMode))
+            s.PerformanceMode = RuntimePerformanceMode.Balanced;
     }
 
     public void Save()

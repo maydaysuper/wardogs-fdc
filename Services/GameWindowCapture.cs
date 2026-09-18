@@ -96,8 +96,10 @@ public sealed class GameWindowCapture
                 Math.Max(1, rc.Bottom - rc.Top));
 
             var crop = NormalizedToPixel(region, clientSize);
+            var attempts = CaptureBackendPolicy.GetAttemptOrder(backend);
 
-            if (backend == CaptureBackendMode.PrintWindow)
+            if (attempts.Count == 1 &&
+                attempts[0] == CaptureBackendMode.PrintWindow)
             {
                 var printed = TryCaptureClientPrintWindow(hwnd, clientSize);
                 if (printed != null)
@@ -111,70 +113,72 @@ public sealed class GameWindowCapture
                     "PrintWindow 采集失败。可切换到“自动”或“屏幕拷贝”。");
             }
 
-            if (backend == CaptureBackendMode.ScreenCopy)
+            if (attempts.Count == 1 &&
+                attempts[0] == CaptureBackendMode.ScreenCopy)
             {
                 LastBackendUsed = "ScreenCopy";
                 return CaptureFromScreen(hwnd, clientSize, crop);
             }
 
             // Auto: prefer screen copy for games because it has the lowest
-            // latency. If the window is off-screen/covered or CopyFromScreen
-            // fails, try PrintWindow (useful for OBS projector/preview windows).
+            // latency. If the window is off-screen/covered, CopyFromScreen
+            // fails, or the result looks blank, try PrintWindow. This is
+            // especially useful for OBS projector/preview windows.
+            Bitmap? screen = null;
+            var screenSucceeded = false;
+            var screenProbablyBlank = true;
+
             try
             {
-                var screen =
-                    CaptureFromScreen(
-                        hwnd,
-                        clientSize,
-                        crop);
+                screen = CaptureFromScreen(hwnd, clientSize, crop);
+                screenSucceeded = true;
+                screenProbablyBlank = IsProbablyBlank(screen);
 
-                if (!IsProbablyBlank(screen))
+                if (CaptureBackendPolicy.ShouldAcceptScreenCopy(
+                        backend,
+                        screenSucceeded,
+                        screenProbablyBlank))
                 {
                     LastBackendUsed = "ScreenCopy";
                     return screen;
                 }
-
-                screen.Dispose();
-
-                var printed =
-                    TryCaptureClientPrintWindow(
-                        hwnd,
-                        clientSize);
-
-                if (printed != null)
-                {
-                    LastBackendUsed =
-                        "PrintWindow(auto-fallback)";
-
-                    using (printed)
-                        return Crop(
-                            printed,
-                            crop);
-                }
-
-                throw new InvalidOperationException(
-                    "屏幕采集结果疑似黑帧，PrintWindow 回退也失败。");
             }
             catch
             {
-                var printed =
-                    TryCaptureClientPrintWindow(
-                        hwnd,
-                        clientSize);
+                screenSucceeded = false;
+                screenProbablyBlank = true;
+            }
+            finally
+            {
+                if (screen != null &&
+                    !CaptureBackendPolicy.ShouldAcceptScreenCopy(
+                        backend,
+                        screenSucceeded,
+                        screenProbablyBlank))
+                {
+                    screen.Dispose();
+                }
+            }
 
+            if (CaptureBackendPolicy.ShouldFallbackToPrintWindow(
+                    backend,
+                    screenSucceeded,
+                    screenProbablyBlank))
+            {
+                var printed = TryCaptureClientPrintWindow(hwnd, clientSize);
                 if (printed != null)
                 {
-                    LastBackendUsed =
-                        "PrintWindow(auto-fallback)";
-
+                    LastBackendUsed = "PrintWindow(auto-fallback)";
                     using (printed)
-                        return Crop(
-                            printed,
-                            crop);
+                        return Crop(printed, crop);
                 }
-
-                throw;
             }
+
+            throw new InvalidOperationException(
+                screenSucceeded && screenProbablyBlank
+                    ? "屏幕采集结果疑似黑帧，PrintWindow 回退也失败。"
+                    : "屏幕采集失败，PrintWindow 回退也失败。请检查窗口模式、标题和采集后端。"
+            );
         }
         finally
         {
@@ -310,11 +314,9 @@ public sealed class GameWindowCapture
         }
     }
 
-    private static bool IsProbablyBlank(
-        Bitmap bitmap)
+    private static bool IsProbablyBlank(Bitmap bitmap)
     {
-        if (bitmap.Width < 2 ||
-            bitmap.Height < 2)
+        if (bitmap.Width < 2 || bitmap.Height < 2)
             return true;
 
         var min = 255;
@@ -324,61 +326,33 @@ public sealed class GameWindowCapture
 
         const int grid = 8;
 
-        for (var gy = 0;
-             gy < grid;
-             gy++)
+        for (var gy = 0; gy < grid; gy++)
         {
-            var y =
-                (int)Math.Round(
-                    gy /
-                    (double)(grid - 1) *
-                    (bitmap.Height - 1));
+            var y = (int)Math.Round(
+                gy / (double)(grid - 1) * (bitmap.Height - 1));
 
-            for (var gx = 0;
-                 gx < grid;
-                 gx++)
+            for (var gx = 0; gx < grid; gx++)
             {
-                var x =
-                    (int)Math.Round(
-                        gx /
-                        (double)(grid - 1) *
-                        (bitmap.Width - 1));
+                var x = (int)Math.Round(
+                    gx / (double)(grid - 1) * (bitmap.Width - 1));
 
-                var color =
-                    bitmap.GetPixel(
-                        x,
-                        y);
+                var color = bitmap.GetPixel(x, y);
 
                 var luminance =
-                    (
-                        color.R * 3 +
-                        color.G * 6 +
-                        color.B
-                    ) /
-                    10;
+                    (color.R * 3 + color.G * 6 + color.B) / 10;
 
-                min = Math.Min(
-                    min,
-                    luminance);
-
-                max = Math.Max(
-                    max,
-                    luminance);
-
+                min = Math.Min(min, luminance);
+                max = Math.Max(max, luminance);
                 sum += luminance;
                 count++;
             }
         }
 
-        var average =
-            count == 0
-                ? 0
-                : sum /
-                  (double)count;
+        var average = count == 0
+            ? 0
+            : sum / (double)count;
 
-        return
-            average < 4 ||
-            max - min < 3;
+        return average < 4 || max - min < 3;
     }
 
     private static Bitmap Crop(Bitmap source, Rectangle crop)
