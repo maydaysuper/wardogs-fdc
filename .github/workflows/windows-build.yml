@@ -3,6 +3,8 @@ name: Build Windows
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -25,8 +27,33 @@ jobs:
       - name: Test
         run: dotnet test tests/WardogsNavigator.Tests/WardogsNavigator.Tests.csproj -c Release
 
-      - name: Publish self-contained x64
-        run: dotnet publish WardogsNavigator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+      - name: Publish self-contained x64 onedir
+        run: dotnet publish WardogsNavigator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish
+
+      - name: Smoke test published startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Join-Path $PWD "publish\WardogsNavigator.exe"
+          if (-not (Test-Path $exe)) { throw "Published EXE missing: $exe" }
+
+          $smoke = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -Wait
+          if ($smoke.ExitCode -ne 0) {
+            $log = Join-Path $env:LOCALAPPDATA "WardogsNavigator\startup-error.log"
+            if (Test-Path $log) { Get-Content $log }
+            throw "Startup smoke test failed with exit code $($smoke.ExitCode)"
+          }
+
+          $app = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited) {
+            $log = Join-Path $env:LOCALAPPDATA "WardogsNavigator\startup-error.log"
+            if (Test-Path $log) { Get-Content $log }
+            throw "Published GUI exited during 5-second launch test. ExitCode=$($app.ExitCode)"
+          }
+
+          Stop-Process -Id $app.Id -Force
+          "Published Windows GUI startup smoke test passed."
 
       - name: Package portable
         shell: pwsh

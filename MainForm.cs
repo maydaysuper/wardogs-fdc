@@ -193,15 +193,27 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
             BackColor = AppTheme.Background,
-            Panel1MinSize = 500,
-            Panel2MinSize = 380,
-            SplitterWidth = 6
+            SplitterWidth = 6,
+            Size = new Size(
+                Math.Max(900, ClientSize.Width),
+                Math.Max(500, ClientSize.Height - top.Height))
         };
-        split.SplitterDistance = Math.Max(
-            500,
-            Math.Min(
-                ClientSize.Width - 410,
-                900));
+
+        // SplitContainer validates minimum panel sizes against its current
+        // width immediately. Setting Panel1/Panel2MinSize inside the object
+        // initializer happens before Dock layout gives the control its real
+        // width and can crash the app during startup.
+        split.Panel1MinSize = 500;
+        split.Panel2MinSize = 380;
+
+        var maxSplitter = Math.Max(
+            split.Panel1MinSize,
+            split.Width - split.Panel2MinSize - split.SplitterWidth);
+
+        split.SplitterDistance = Math.Clamp(
+            Math.Min(ClientSize.Width - 410, 900),
+            split.Panel1MinSize,
+            maxSplitter);
 
         _mapCanvas.Dock = DockStyle.Fill;
         split.Panel1.Controls.Add(_mapCanvas);
