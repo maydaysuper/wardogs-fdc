@@ -78,6 +78,8 @@ public sealed class RoadGraphStore
             VerifiedEdges = graph.Edges.Count(e => e.Verified && !e.Blocked),
             LearnedEdges = graph.Edges.Count(e => e.Source.Equals("trace", StringComparison.OrdinalIgnoreCase)),
             AutoEdges = graph.Edges.Count(e => e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)),
+            LocalSpeedLearnedEdges = graph.Edges.Count(e =>
+                (e.LocalVehicleSpeedMultipliers?.Count ?? 0) > 0),
             AiLearnedEdges = graph.Edges.Count(e =>
                 e.AiConfidence > 0 ||
                 Math.Abs(e.AiRiskAdjustment) > 1e-9 ||
