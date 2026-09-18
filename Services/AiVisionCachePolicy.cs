@@ -29,7 +29,7 @@ public static class AiVisionCachePolicy
             Math.Clamp(cacheSeconds, 10, 600));
 
         return nowUtc - cachedAtUtc <= ttl &&
-               cachedRouteKey.Equals(routeKey, StringComparison.Ordinal) &&
+               cachedRouteKey.Equals(routeKey, StringComparison.OrdinalIgnoreCase) &&
                HammingDistance(cachedVisualHash, visualHash) <= 4;
     }
 
