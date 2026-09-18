@@ -79,10 +79,12 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 860,
-            BackColor = BackColor
+            BackColor = BackColor,
+            Panel1MinSize = 500,
+            Panel2MinSize = 360
         };
         Controls.Add(split);
+        split.SplitterDistance = Math.Max(500, Math.Min(ClientSize.Width - 380, 860));
 
         _mapCanvas.Dock = DockStyle.Fill;
         split.Panel1.Controls.Add(_mapCanvas);
