@@ -37,7 +37,9 @@ public sealed class RoutePlanner
             var graph = _roadGraphs.Load(mapId);
             var graphRoute = _graphRouter.TryPlan(graph, start, end, preference);
 
-            if (graphRoute != null && graphRoute.Points.Count >= 2)
+            if (graphRoute != null &&
+                graphRoute.Points.Count >= 2 &&
+                graphRoute.Confidence >= 0.18)
             {
                 return new RoutePlan
                 {
@@ -49,7 +51,9 @@ public sealed class RoutePlanner
                         ? graphRoute.DistanceKm / speedKmh * 60.0
                         : 0,
                     Source =
-                        "road-graph " +
+                        (graphRoute.Confidence >= 0.50
+                            ? "road-graph verified "
+                            : "road-graph auto ") +
                         Math.Round(graphRoute.Confidence * 100).ToString("F0") +
                         "% · " +
                         graphRoute.EdgeCount +
@@ -150,10 +154,33 @@ public sealed class RoutePlanner
     public static double DistanceToRouteMeters(RoutePlan route, MapPoint point)
     {
         if (route.Points.Count == 0) return double.MaxValue;
+        if (route.Points.Count == 1) return point.DistanceMeters(route.Points[0]);
+
         var best = double.MaxValue;
-        foreach (var p in route.Points)
-            best = Math.Min(best, point.DistanceMeters(p));
+        for (var i = 0; i + 1 < route.Points.Count; i++)
+            best = Math.Min(best, DistanceToSegmentMeters(point, route.Points[i], route.Points[i + 1]));
         return best;
+    }
+
+    private static double DistanceToSegmentMeters(MapPoint p, MapPoint a, MapPoint b)
+    {
+        var dx = b.X - a.X;
+        var dy = b.Y - a.Y;
+        var denom = dx * dx + dy * dy;
+
+        if (denom < 1e-12)
+            return p.DistanceMeters(a);
+
+        var t = Math.Clamp(
+            ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / denom,
+            0,
+            1);
+
+        var projected = new MapPoint(
+            a.X + t * dx,
+            a.Y + t * dy);
+
+        return p.DistanceMeters(projected);
     }
 
     private float[] GetOrBuildCosts(string path, string mapId, RoutePreference preference)
