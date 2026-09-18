@@ -206,19 +206,23 @@ public sealed class CoreTests
             MapId = "test",
             Nodes = new List<RoadNode>
             {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
                 new() { Id = "s", Position = new MapPoint(10, 10) },
                 new() { Id = "p1", Position = new MapPoint(10, 14) },
                 new() { Id = "p2", Position = new MapPoint(14, 14) },
                 new() { Id = "t1", Position = new MapPoint(12, 11) },
-                new() { Id = "e", Position = new MapPoint(14, 10) }
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
             },
             Edges = new List<RoadEdge>
             {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "sp1", A = "s", B = "p1", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "p1p2", A = "p1", B = "p2", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "p2e", A = "p2", B = "e", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "st1", A = "s", B = "t1", Class = RoadClass.Track, Verified = true },
-                new() { Id = "t1e", A = "t1", B = "e", Class = RoadClass.Track, Verified = true }
+                new() { Id = "t1e", A = "t1", B = "e", Class = RoadClass.Track, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
             }
         };
 
@@ -245,22 +249,24 @@ public sealed class CoreTests
         var router = new RoadGraphRouter();
         var truckRoute = router.TryPlan(
             graph,
-            new MapPoint(10.01, 10.01),
-            new MapPoint(13.99, 10.01),
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
             RoutePreference.Fastest,
             truck);
 
         var buggyRoute = router.TryPlan(
             graph,
-            new MapPoint(10.01, 10.01),
-            new MapPoint(13.99, 10.01),
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
             RoutePreference.Fastest,
             buggy);
 
         Assert.NotNull(truckRoute);
         Assert.NotNull(buggyRoute);
-        Assert.Contains("sp1", truckRoute!.EdgeIds);
-        Assert.Contains("st1", buggyRoute!.EdgeIds);
+        Assert.Contains("p1p2", truckRoute!.EdgeIds);
+        Assert.DoesNotContain("t1e", truckRoute.EdgeIds);
+        Assert.Contains("t1e", buggyRoute!.EdgeIds);
+        Assert.DoesNotContain("p1p2", buggyRoute.EdgeIds);
     }
 
     [Fact]
@@ -271,17 +277,21 @@ public sealed class CoreTests
             MapId = "test",
             Nodes = new List<RoadNode>
             {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
                 new() { Id = "s", Position = new MapPoint(10, 10) },
                 new() { Id = "north", Position = new MapPoint(12, 12) },
                 new() { Id = "south", Position = new MapPoint(12, 8) },
-                new() { Id = "e", Position = new MapPoint(14, 10) }
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
             },
             Edges = new List<RoadEdge>
             {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "sn", A = "s", B = "north", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "ne", A = "north", B = "e", Class = RoadClass.Primary, Verified = true },
                 new() { Id = "ss", A = "s", B = "south", Class = RoadClass.Primary, Verified = true },
-                new() { Id = "se", A = "south", B = "e", Class = RoadClass.Primary, Verified = true }
+                new() { Id = "se", A = "south", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
             }
         };
 
@@ -299,15 +309,17 @@ public sealed class CoreTests
 
         var route = new RoadGraphRouter().TryPlan(
             graph,
-            new MapPoint(10.01, 10),
-            new MapPoint(13.99, 10),
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
             RoutePreference.Safe,
             VehicleRoutingProfileService.Generic(),
             hazards);
 
         Assert.NotNull(route);
         Assert.Contains("ss", route!.EdgeIds);
+        Assert.Contains("se", route.EdgeIds);
         Assert.DoesNotContain("sn", route.EdgeIds);
+        Assert.DoesNotContain("ne", route.EdgeIds);
     }
 
     [Fact]
