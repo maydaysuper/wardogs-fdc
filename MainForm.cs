@@ -534,7 +534,11 @@ public sealed class MainForm : Form
 
     private async Task SwitchMapAsync()
     {
-        _autoRoadCts?.Cancel();
+        var requestedMapId = _map.Text;
+
+        if (_autoExtractMapId != null &&
+            !_autoExtractMapId.Equals(requestedMapId, StringComparison.OrdinalIgnoreCase))
+            _autoRoadCts?.Cancel();
 
         if (_traceLearning.IsRecording)
         {
