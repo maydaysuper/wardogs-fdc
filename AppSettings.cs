@@ -45,8 +45,42 @@ public sealed class AppSettings
         {
             if (File.Exists(PathName))
             {
-                var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(PathName));
-                if (s != null) return s;
+                var s = JsonSerializer.Deserialize<AppSettings>(
+                    File.ReadAllText(PathName));
+
+                if (s != null)
+                {
+                    s.TargetMarkerProfile ??=
+                        new TargetMarkerProfile();
+                    s.PlayerRegion ??=
+                        new NormalizedRegion();
+                    s.TargetRegion ??=
+                        new NormalizedRegion();
+                    s.VisionMapRegion ??=
+                        new NormalizedRegion();
+                    s.VisualMapMinRegistrationConfidence =
+                        Math.Clamp(
+                            s.VisualMapMinRegistrationConfidence <= 0
+                                ? 0.42
+                                : s.VisualMapMinRegistrationConfidence,
+                            0.20,
+                            0.95);
+                    s.VisualTargetMinConfidence =
+                        Math.Clamp(
+                            s.VisualTargetMinConfidence <= 0
+                                ? 0.54
+                                : s.VisualTargetMinConfidence,
+                            0.25,
+                            0.95);
+                    s.VisualTargetScanSeconds =
+                        Math.Clamp(
+                            s.VisualTargetScanSeconds <= 0
+                                ? 3
+                                : s.VisualTargetScanSeconds,
+                            2,
+                            15);
+                    return s;
+                }
             }
         }
         catch { }
