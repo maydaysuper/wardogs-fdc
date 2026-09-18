@@ -57,7 +57,7 @@ public sealed class MainForm : Form
     private int _lastCueIndex = -1;
     private CancellationTokenSource? _planCts;
     private CancellationTokenSource? _autoRoadCts;
-    private bool _autoExtractingRoads;
+    private string? _autoExtractMapId;
 
     public MainForm()
     {
@@ -864,7 +864,13 @@ public sealed class MainForm : Form
 
     private async Task AutoExtractRoadsAsync(bool force)
     {
-        if (_autoExtractingRoads || string.IsNullOrWhiteSpace(_map.Text))
+        if (string.IsNullOrWhiteSpace(_map.Text))
+            return;
+
+        var mapId = _map.Text;
+
+        if (_autoExtractMapId != null &&
+            _autoExtractMapId.Equals(mapId, StringComparison.OrdinalIgnoreCase))
             return;
 
         if (!force &&
@@ -872,13 +878,12 @@ public sealed class MainForm : Form
                 e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)))
             return;
 
-        var mapId = _map.Text;
-        _autoExtractingRoads = true;
-        _autoRoadButton.Enabled = false;
-
         _autoRoadCts?.Cancel();
-        _autoRoadCts?.Dispose();
-        _autoRoadCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+
+        var localCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        _autoRoadCts = localCts;
+        _autoExtractMapId = mapId;
+        _autoRoadButton.Enabled = false;
 
         try
         {
@@ -886,7 +891,7 @@ public sealed class MainForm : Form
 
             var result = await _autoRoadExtractor.ExtractAsync(
                 mapId,
-                _autoRoadCts.Token);
+                localCts.Token);
 
             if (!_map.Text.Equals(mapId, StringComparison.OrdinalIgnoreCase))
                 return;
@@ -908,16 +913,24 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
-            UpdateRoadGraphStatus("自动道路识别超时/取消；保留现有 Road Graph。");
+            if (_map.Text.Equals(mapId, StringComparison.OrdinalIgnoreCase))
+                UpdateRoadGraphStatus("自动道路识别超时/取消；保留现有 Road Graph。");
         }
         catch (Exception ex)
         {
-            UpdateRoadGraphStatus("自动道路识别失败：" + ex.Message);
+            if (_map.Text.Equals(mapId, StringComparison.OrdinalIgnoreCase))
+                UpdateRoadGraphStatus("自动道路识别失败：" + ex.Message);
         }
         finally
         {
-            _autoExtractingRoads = false;
-            _autoRoadButton.Enabled = true;
+            if (ReferenceEquals(_autoRoadCts, localCts))
+            {
+                _autoRoadCts = null;
+                _autoExtractMapId = null;
+                _autoRoadButton.Enabled = true;
+            }
+
+            localCts.Dispose();
         }
     }
 
