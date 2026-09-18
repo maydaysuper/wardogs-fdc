@@ -27,6 +27,7 @@ public sealed class MainForm : Form
     private readonly TargetMarkerDetector _targetMarkerDetector = new();
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
+    private readonly PerformanceMonitorService _performance = new();
     private readonly CoordinateRecognizer _ocr = new();
     private readonly DeepSeekClient _ai = new();
     private readonly SpeechSynthesizer _tts = new();
@@ -51,6 +52,10 @@ public sealed class MainForm : Form
     private readonly CheckBox _aiAutoApplyLearning = new();
     private readonly CheckBox _aiAutoVisionScan = new();
     private readonly TextBox _windowTitle = new();
+    private readonly TextBox _captureTitle = new();
+    private readonly ComboBox _captureBackend = new();
+    private readonly ComboBox _performanceMode = new();
+    private readonly Label _systemStatus = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
     private readonly ComboBox _roadClass = new();
@@ -59,6 +64,7 @@ public sealed class MainForm : Form
     private readonly Button _roadLearnButton = new();
     private readonly Button _autoRoadButton = new();
     private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 1500 };
     private readonly NavigationPositionFilter _positionFilter = new();
 
     private RoutePlan? _route;
@@ -106,22 +112,30 @@ public sealed class MainForm : Form
             new MapVisualRegistrationService(
                 _mapAssets);
 
-        Text = "WARDOGS Tactical Navigator";
-        Width = 1420;
+        Text = "WARDOGS Tactical Navigator · 0.10.0";
+        Width = 1460;
         Height = 860;
         MinimumSize = new Size(1100, 680);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(18, 20, 24);
-        ForeColor = Color.Gainsboro;
+        BackColor = AppTheme.Background;
+        ForeColor = AppTheme.Text;
 
         BuildUi();
+        AppTheme.Apply(this);
         LoadSettingsIntoUi();
         WireEvents();
+        ApplyPerformanceMode();
+
+        _statusTimer.Tick += (_, _) =>
+            UpdateSystemStatus();
+        _statusTimer.Start();
+        UpdateSystemStatus();
 
         Shown += async (_, _) => await SwitchMapAsync();
         FormClosed += (_, _) =>
         {
             _liveTimer.Stop();
+            _statusTimer.Stop();
             _ocr.Dispose();
             _mapAssets.Dispose();
             _tts.Dispose();
@@ -136,21 +150,67 @@ public sealed class MainForm : Form
 
     private void BuildUi()
     {
+        var host = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.Background
+        };
+        Controls.Add(host);
+
+        var top = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 58,
+            Padding = new Padding(16, 8, 16, 8),
+            BackColor = Color.FromArgb(20, 24, 31)
+        };
+
+        var brand = new Label
+        {
+            Dock = DockStyle.Left,
+            Width = 300,
+            Text = "WARDOGS  NAVIGATOR\r\n0.10.0",
+            ForeColor = Color.White,
+            Font = new Font(
+                "Microsoft YaHei UI",
+                11.5f,
+                FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        _systemStatus.Dock = DockStyle.Fill;
+        _systemStatus.ForeColor = AppTheme.Muted;
+        _systemStatus.TextAlign = ContentAlignment.MiddleRight;
+        _systemStatus.Font = new Font(
+            "Microsoft YaHei UI",
+            9.0f);
+
+        top.Controls.Add(_systemStatus);
+        top.Controls.Add(brand);
+
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            BackColor = BackColor,
+            BackColor = AppTheme.Background,
             Panel1MinSize = 500,
-            Panel2MinSize = 360
+            Panel2MinSize = 380,
+            SplitterWidth = 6
         };
-        Controls.Add(split);
-        split.SplitterDistance = Math.Max(500, Math.Min(ClientSize.Width - 380, 860));
+        split.SplitterDistance = Math.Max(
+            500,
+            Math.Min(
+                ClientSize.Width - 410,
+                900));
 
         _mapCanvas.Dock = DockStyle.Fill;
         split.Panel1.Controls.Add(_mapCanvas);
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Point(14, 6)
+        };
         split.Panel2.Controls.Add(tabs);
 
         tabs.TabPages.Add(MakeNavigationTab());
@@ -158,6 +218,9 @@ public sealed class MainForm : Form
         tabs.TabPages.Add(MakeRoadGraphTab());
         tabs.TabPages.Add(MakeAiTab());
         tabs.TabPages.Add(MakeCalibrationTab());
+
+        host.Controls.Add(split);
+        host.Controls.Add(top);
     }
 
     private TabPage MakeNavigationTab()
