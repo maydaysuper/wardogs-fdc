@@ -17,6 +17,15 @@ public sealed class RoutePlanner
     private readonly Dictionary<string, float[]> _costCache = new(StringComparer.OrdinalIgnoreCase);
     private const int Grid = 384;
 
+    public int RouteCacheHits =>
+        _graphRouter.PathCacheHits;
+
+    public int RouteCacheMisses =>
+        _graphRouter.PathCacheMisses;
+
+    public int TopologyCacheHits =>
+        _graphRouter.TopologyCacheHits;
+
     public RoutePlanner(
         MapAssetService assets,
         RoadGraphStore? roadGraphs = null,
