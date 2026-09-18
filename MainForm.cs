@@ -740,6 +740,10 @@ public sealed class MainForm : Form
             !_autoExtractMapId.Equals(requestedMapId, StringComparison.OrdinalIgnoreCase))
             _autoRoadCts?.Cancel();
 
+        _visionCts?.Cancel();
+        _lastVisionReport = null;
+        _lastAutoVisionScan = DateTime.MinValue;
+
         if (_traceLearning.IsRecording)
         {
             _traceLearning.Cancel();
