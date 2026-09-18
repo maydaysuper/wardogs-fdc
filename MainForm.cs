@@ -721,19 +721,108 @@ public sealed class MainForm : Form
         var tab = NewTab("校准");
         var p = Flow();
 
-        p.Controls.Add(Header("游戏窗口标题包含"));
+        p.Controls.Add(Header("游戏窗口 / 采集源"));
 
         _windowTitle.Width = 360;
+        _windowTitle.PlaceholderText = "游戏窗口标题，例如 WARDOGS";
         p.Controls.Add(_windowTitle);
 
-        var saveTitle = Btn("保存窗口设置");
+        _captureTitle.Width = 360;
+        _captureTitle.PlaceholderText =
+            "可选：OBS Projector / OBS预览窗口标题；留空则使用游戏窗口";
+        p.Controls.Add(_captureTitle);
+
+        _captureBackend.DropDownStyle =
+            ComboBoxStyle.DropDownList;
+        _captureBackend.Width = 180;
+        _captureBackend.Items.AddRange(
+            Enum.GetNames<CaptureBackendMode>());
+
+        _performanceMode.DropDownStyle =
+            ComboBoxStyle.DropDownList;
+        _performanceMode.Width = 180;
+        _performanceMode.Items.AddRange(
+            Enum.GetNames<RuntimePerformanceMode>());
+
+        var captureRow = new FlowLayoutPanel
+        {
+            Width = 400,
+            Height = 40,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        captureRow.Controls.Add(_captureBackend);
+        captureRow.Controls.Add(_performanceMode);
+        p.Controls.Add(captureRow);
+
+        var saveTitle = Btn("保存采集与性能设置");
         saveTitle.Click += (_, _) =>
         {
-            _settings.GameWindowTitleContains = _windowTitle.Text.Trim();
+            _settings.GameWindowTitleContains =
+                _windowTitle.Text.Trim();
+
+            _settings.CaptureWindowTitleContains =
+                _captureTitle.Text.Trim();
+
+            if (Enum.TryParse<CaptureBackendMode>(
+                    _captureBackend.Text,
+                    out var backend))
+            {
+                _settings.CaptureBackend =
+                    backend;
+            }
+
+            if (Enum.TryParse<RuntimePerformanceMode>(
+                    _performanceMode.Text,
+                    out var performance))
+            {
+                _settings.PerformanceMode =
+                    performance;
+            }
+
+            _capture.InvalidateWindowCache();
+            ApplyPerformanceMode();
             _settings.Save();
             UpdateCalibrationStatus();
+            UpdateSystemStatus();
         };
+
+        var testCapture = Btn("测试采集源");
+        testCapture.Click += (_, _) =>
+        {
+            try
+            {
+                using var bitmap =
+                    _capture.CaptureClient(
+                        CaptureSourceTitle(),
+                        _settings.CaptureBackend);
+
+                MessageBox.Show(
+                    "采集成功：" +
+                    bitmap.Width +
+                    "×" +
+                    bitmap.Height +
+                    "\r\n后端：" +
+                    _capture.LastBackendUsed +
+                    "\r\n耗时：" +
+                    _capture.LastCaptureMilliseconds.ToString("F1") +
+                    " ms",
+                    "WARDOGS 采集测试",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "采集失败：" +
+                    ex.Message,
+                    "WARDOGS 采集测试",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        };
+
         p.Controls.Add(saveTitle);
+        p.Controls.Add(testCapture);
 
         var self = Btn("框选当前位置坐标区域");
         self.Click += (_, _) => CalibrateRegion(true);
@@ -852,7 +941,21 @@ public sealed class MainForm : Form
         _routeMode.SelectedItem = _settings.RoutePreference.ToString();
         if (_routeMode.SelectedIndex < 0) _routeMode.SelectedIndex = 0;
 
-        _windowTitle.Text = _settings.GameWindowTitleContains;
+        _windowTitle.Text =
+            _settings.GameWindowTitleContains;
+        _captureTitle.Text =
+            _settings.CaptureWindowTitleContains;
+
+        _captureBackend.SelectedItem =
+            _settings.CaptureBackend.ToString();
+        if (_captureBackend.SelectedIndex < 0)
+            _captureBackend.SelectedIndex = 0;
+
+        _performanceMode.SelectedItem =
+            _settings.PerformanceMode.ToString();
+        if (_performanceMode.SelectedIndex < 0)
+            _performanceMode.SelectedIndex = 0;
+
         _apiKey.Text = SecretStore.LoadDeepSeekKey();
 
         _model.SelectedItem = _settings.DeepSeekModel;
