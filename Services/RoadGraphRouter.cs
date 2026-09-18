@@ -286,13 +286,11 @@ public sealed class RoadGraphRouter
         if (edge.VehicleSpeedMultipliers.TryGetValue(vehicleProfile.VehicleId, out var learnedMultiplier))
             speedFactor *= Math.Clamp(learnedMultiplier, 0.35, 1.35);
 
-        var midpoint = new MapPoint(
-            (a.X + b.X) * 0.5,
-            (a.Y + b.Y) * 0.5);
-
         var hazardPenalty = hazards
             .Where(h => h.ExpiresUtc > DateTime.UtcNow)
-            .Where(h => midpoint.DistanceMeters(h.Center) <= h.RadiusMeters)
+            .Where(h =>
+                h.Center.DistanceMeters(Project(h.Center, a, b)) <=
+                h.RadiusMeters)
             .Select(h => Math.Clamp(h.Severity, 0, 1))
             .DefaultIfEmpty(0)
             .Max();
