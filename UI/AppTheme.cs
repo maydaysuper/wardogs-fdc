@@ -36,14 +36,14 @@ public static class AppTheme
                 page.ForeColor = Text;
                 break;
 
-            case Panel panel:
-                panel.BackColor = Background;
-                panel.ForeColor = Text;
-                break;
-
             case FlowLayoutPanel flow:
                 flow.BackColor = Background;
                 flow.ForeColor = Text;
+                break;
+
+            case Panel panel:
+                panel.BackColor = Background;
+                panel.ForeColor = Text;
                 break;
 
             case TextBox text:
