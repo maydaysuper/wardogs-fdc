@@ -8,6 +8,11 @@ public sealed class AiVisionNavigationService
 {
     private readonly DeepSeekClient _deepSeek;
     private readonly MapAssetService _maps;
+    private readonly object _cacheSync = new();
+    private VisionCacheEntry? _cache;
+
+    public int CacheHits { get; private set; }
+    public int CacheMisses { get; private set; }
 
     public AiVisionNavigationService(
         DeepSeekClient deepSeek,
@@ -17,7 +22,7 @@ public sealed class AiVisionNavigationService
         _maps = maps;
     }
 
-    public async Task<AiVisionNavigationReport> AnalyzeRouteAsync(
+    public Task<AiVisionNavigationReport> AnalyzeRouteAsync(
         string apiKey,
         string mapId,
         RoadGraph graph,
@@ -25,6 +30,31 @@ public sealed class AiVisionNavigationService
         Bitmap gameMapScreenshot,
         MapPoint? current = null,
         MapPoint? target = null,
+        CancellationToken cancellationToken = default) =>
+        AnalyzeRouteAsync(
+            apiKey,
+            mapId,
+            graph,
+            route,
+            gameMapScreenshot,
+            current,
+            target,
+            90,
+            1280,
+            "high",
+            cancellationToken);
+
+    public async Task<AiVisionNavigationReport> AnalyzeRouteAsync(
+        string apiKey,
+        string mapId,
+        RoadGraph graph,
+        RoutePlan route,
+        Bitmap gameMapScreenshot,
+        MapPoint? current,
+        MapPoint? target,
+        int cacheSeconds,
+        int maxImageDimension,
+        string imageDetail,
         CancellationToken cancellationToken = default)
     {
         if (route.EdgeIds.Count == 0)
@@ -54,6 +84,43 @@ public sealed class AiVisionNavigationService
             };
         }
 
+        var routeKey =
+            mapId +
+            "|" +
+            string.Join(
+                ",",
+                validEdges
+                    .Select(x => x.Id)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+
+        var visualHash =
+            ComputeDHash(
+                gameMapScreenshot);
+
+        lock (_cacheSync)
+        {
+            if (_cache != null &&
+                DateTime.UtcNow - _cache.CreatedUtc <=
+                    TimeSpan.FromSeconds(
+                        Math.Clamp(
+                            cacheSeconds,
+                            10,
+                            600)) &&
+                _cache.RouteKey.Equals(
+                    routeKey,
+                    StringComparison.Ordinal) &&
+                HammingDistance(
+                    _cache.VisualHash,
+                    visualHash) <= 4)
+            {
+                CacheHits++;
+                return CloneReport(
+                    _cache.Report);
+            }
+
+            CacheMisses++;
+        }
+
         var tokenToEdge = validEdges
             .Select((edge, index) => new
             {
@@ -78,7 +145,10 @@ public sealed class AiVisionNavigationService
         {
             ToPngScaled(
                 gameMapScreenshot,
-                1600),
+                Math.Clamp(
+                    maxImageDimension,
+                    768,
+                    1920)),
             ToPng(reference)
         };
 
@@ -113,6 +183,7 @@ public sealed class AiVisionNavigationService
             system,
             user,
             images,
+            imageDetail,
             cancellationToken);
 
         raw.Findings ??= new List<RawVisionFinding>();
@@ -138,11 +209,24 @@ public sealed class AiVisionNavigationService
             });
         }
 
-        return new AiVisionNavigationReport
+        var report = new AiVisionNavigationReport
         {
             Summary = raw.Summary ?? "",
             Findings = findings
         };
+
+        lock (_cacheSync)
+        {
+            _cache = new VisionCacheEntry
+            {
+                RouteKey = routeKey,
+                VisualHash = visualHash,
+                CreatedUtc = DateTime.UtcNow,
+                Report = CloneReport(report)
+            };
+        }
+
+        return report;
     }
 
     private async Task<Bitmap> BuildReferenceAsync(
@@ -375,6 +459,106 @@ public sealed class AiVisionNavigationService
         return ms.ToArray();
     }
 
+    private static ulong ComputeDHash(
+        Bitmap source)
+    {
+        using var small =
+            new Bitmap(
+                9,
+                8,
+                PixelFormat.Format24bppRgb);
+
+        using (var g =
+               Graphics.FromImage(small))
+        {
+            g.InterpolationMode =
+                InterpolationMode.Bilinear;
+            g.DrawImage(
+                source,
+                new Rectangle(
+                    0,
+                    0,
+                    9,
+                    8));
+        }
+
+        ulong hash = 0;
+        var bit = 0;
+
+        for (var y = 0;
+             y < 8;
+             y++)
+        {
+            for (var x = 0;
+                 x < 8;
+                 x++)
+            {
+                var a =
+                    small.GetPixel(
+                        x,
+                        y);
+
+                var b =
+                    small.GetPixel(
+                        x + 1,
+                        y);
+
+                var la =
+                    a.R * 3 +
+                    a.G * 6 +
+                    a.B;
+
+                var lb =
+                    b.R * 3 +
+                    b.G * 6 +
+                    b.B;
+
+                if (la > lb)
+                    hash |=
+                        1UL << bit;
+
+                bit++;
+            }
+        }
+
+        return hash;
+    }
+
+    private static int HammingDistance(
+        ulong a,
+        ulong b)
+    {
+        var value = a ^ b;
+        var count = 0;
+
+        while (value != 0)
+        {
+            value &=
+                value - 1;
+            count++;
+        }
+
+        return count;
+    }
+
+    private static AiVisionNavigationReport CloneReport(
+        AiVisionNavigationReport source) =>
+        new()
+        {
+            Summary = source.Summary,
+            Findings = source.Findings
+                .Select(x =>
+                    new AiVisionFinding
+                    {
+                        EdgeId = x.EdgeId,
+                        Kind = x.Kind,
+                        Severity = x.Severity,
+                        Confidence = x.Confidence,
+                        Reason = x.Reason
+                    })
+                .ToList()
+        };
+
     private static string NormalizeKind(string? kind) =>
         (kind ?? "").Trim().ToLowerInvariant() switch
         {
@@ -383,6 +567,14 @@ public sealed class AiVisionNavigationService
             "clear" => "clear",
             _ => "uncertain"
         };
+
+    private sealed class VisionCacheEntry
+    {
+        public string RouteKey { get; init; } = "";
+        public ulong VisualHash { get; init; }
+        public DateTime CreatedUtc { get; init; }
+        public AiVisionNavigationReport Report { get; init; } = new();
+    }
 
     private sealed class RawVisionReport
     {
