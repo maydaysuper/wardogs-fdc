@@ -50,6 +50,7 @@ public sealed class RoadGraphStats
     public int VerifiedEdges { get; set; }
     public int LearnedEdges { get; set; }
     public int AutoEdges { get; set; }
+    public int LocalSpeedLearnedEdges { get; set; }
     public int AiLearnedEdges { get; set; }
     public double NetworkKm { get; set; }
 }
