@@ -1855,11 +1855,22 @@ public sealed class CoreTests
                 centerExpected) <
             900);
 
+        var angleDelta =
+            (
+                registration.RotationDeg -
+                expected.RotationDeg
+            ) %
+            360;
+
+        if (angleDelta > 180)
+            angleDelta -= 360;
+
+        if (angleDelta < -180)
+            angleDelta += 360;
+
         var angleError =
             Math.Abs(
-                NavigationGuidance.NormalizeSigned(
-                    registration.RotationDeg -
-                    expected.RotationDeg));
+                angleDelta);
 
         Assert.True(
             angleError <= 15,
