@@ -13,8 +13,12 @@ public sealed class MainForm : Form
     private readonly MapCatalog _maps = new();
     private readonly EconomyEngine _economy = new();
     private readonly RoadGraphStore _roadGraphs = new();
+    private readonly NavigationHazardStore _hazards = new();
+    private readonly NavigationExperienceStore _experiences = new();
+    private readonly NavigationLearningSession _navigationLearning = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
+    private readonly AiNavigationLearningService _aiNavigationLearning;
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -25,6 +29,7 @@ public sealed class MainForm : Form
     private readonly MapCanvas _mapCanvas = new();
     private readonly ComboBox _map = new();
     private readonly ComboBox _routeMode = new();
+    private readonly ComboBox _navVehicle = new();
     private readonly TextBox _selfX = new();
     private readonly TextBox _selfY = new();
     private readonly TextBox _targetX = new();
@@ -35,6 +40,7 @@ public sealed class MainForm : Form
     private readonly TextBox _apiKey = new();
     private readonly ComboBox _model = new();
     private readonly TextBox _aiOutput = new();
+    private readonly CheckBox _aiAutoApplyLearning = new();
     private readonly TextBox _windowTitle = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
@@ -58,11 +64,13 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _planCts;
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
+    private AiNavigationLearningReport? _lastAiLearningReport;
 
     public MainForm()
     {
-        _routes = new RoutePlanner(_mapAssets, _roadGraphs);
+        _routes = new RoutePlanner(_mapAssets, _roadGraphs, _hazards);
         _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
+        _aiNavigationLearning = new AiNavigationLearningService(_ai);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
