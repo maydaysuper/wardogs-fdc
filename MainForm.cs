@@ -82,6 +82,7 @@ public sealed class MainForm : Form
     private AiVisionNavigationReport? _lastVisionReport;
     private bool _aiLearningBusy;
     private bool _visionBusy;
+    private bool _targetScanBusy;
     private bool _liveTickBusy;
     private DateTime _lastAutoVisionScan = DateTime.MinValue;
     private DateTime _lastTargetOcrUtc = DateTime.MinValue;
@@ -89,6 +90,7 @@ public sealed class MainForm : Form
     private MapViewportRegistration? _lastMapRegistration;
     private VisualTargetDetection? _lastVisualTargetDetection;
     private CancellationTokenSource? _visionCts;
+    private CancellationTokenSource? _targetScanCts;
 
     public MainForm()
     {
@@ -128,6 +130,7 @@ public sealed class MainForm : Form
             _predictionCts?.Cancel();
             _autoRoadCts?.Cancel();
             _visionCts?.Cancel();
+            _targetScanCts?.Cancel();
         };
     }
 
@@ -813,6 +816,7 @@ public sealed class MainForm : Form
             _autoRoadCts?.Cancel();
 
         _visionCts?.Cancel();
+        _targetScanCts?.Cancel();
         _predictionCts?.Cancel();
         _lastVisionReport = null;
         _lastAutoVisionScan = DateTime.MinValue;
@@ -1051,8 +1055,100 @@ public sealed class MainForm : Form
         await PlanRouteAsync(false);
     }
 
+    private async Task RefreshLiveTargetAsync()
+    {
+        if (_targetScanBusy)
+            return;
+
+        _targetScanBusy = true;
+
+        _targetScanCts?.Cancel();
+        _targetScanCts?.Dispose();
+
+        var localCts =
+            new CancellationTokenSource(
+                TimeSpan.FromSeconds(18));
+
+        _targetScanCts =
+            localCts;
+
+        try
+        {
+            var mapId =
+                _map.Text;
+
+            var target =
+                await ReadBestTargetAsync(
+                    silent: true,
+                    localCts.Token);
+
+            if (localCts.IsCancellationRequested ||
+                !_map.Text.Equals(
+                    mapId,
+                    StringComparison.OrdinalIgnoreCase) ||
+                target is not MapPoint targetPoint)
+                return;
+
+            var changed =
+                !TryPoint(
+                    _targetX,
+                    _targetY,
+                    out var oldTarget) ||
+                oldTarget.DistanceMeters(
+                    targetPoint) > 12;
+
+            if (!changed)
+            {
+                _pendingTargetPoint = null;
+                _pendingTargetSamples = 0;
+                return;
+            }
+
+            if (_pendingTargetPoint is MapPoint pending &&
+                pending.DistanceMeters(
+                    targetPoint) <= 20)
+            {
+                _pendingTargetSamples++;
+            }
+            else
+            {
+                _pendingTargetPoint =
+                    targetPoint;
+                _pendingTargetSamples = 1;
+            }
+
+            if (_pendingTargetSamples < 2)
+                return;
+
+            SetTarget(targetPoint);
+            _pendingTargetPoint = null;
+            _pendingTargetSamples = 0;
+
+            await PlanRouteAsync(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Automatic target scanning is opportunistic. Keep navigating
+            // toward the last confirmed destination if one scan fails.
+        }
+        finally
+        {
+            if (ReferenceEquals(
+                    _targetScanCts,
+                    localCts))
+                _targetScanCts = null;
+
+            localCts.Dispose();
+            _targetScanBusy = false;
+        }
+    }
+
     private async Task<MapPoint?> ReadBestTargetAsync(
-        bool silent)
+        bool silent,
+        CancellationToken cancellationToken = default)
     {
         string visualError = "";
 
@@ -1062,7 +1158,8 @@ public sealed class MainForm : Form
         {
             var visual =
                 await ReadVisualTargetAsync(
-                    silent: true);
+                    silent: true,
+                    cancellationToken);
 
             if (visual.Success &&
                 visual.Confidence >=
@@ -1078,7 +1175,8 @@ public sealed class MainForm : Form
             var ocr =
                 await ReadRegionAsync(
                     _settings.TargetRegion,
-                    silent: true);
+                    silent: true,
+                    cancellationToken);
 
             if (ocr is MapPoint point)
                 return point;
@@ -1291,12 +1389,16 @@ public sealed class MainForm : Form
 
     private async Task<MapPoint?> ReadRegionAsync(
         NormalizedRegion region,
-        bool silent = false)
+        bool silent = false,
+        CancellationToken cancellationToken = default)
     {
         try
         {
             using var bitmap = _capture.Capture(_settings.GameWindowTitleContains, region);
-            var result = await _ocr.RecognizeAsync(bitmap);
+            var result =
+                await _ocr.RecognizeAsync(
+                    bitmap,
+                    cancellationToken);
 
             if (!result.Success)
             {
@@ -1438,6 +1540,7 @@ public sealed class MainForm : Form
 
                 if (_settings.AutoReadTarget &&
                     targetReadAvailable &&
+                    !_targetScanBusy &&
                     DateTime.UtcNow - _lastTargetOcrUtc >=
                         TimeSpan.FromSeconds(
                             targetScanSeconds))
@@ -1445,51 +1548,10 @@ public sealed class MainForm : Form
                     _lastTargetOcrUtc =
                         DateTime.UtcNow;
 
-                    var target =
-                        await ReadBestTargetAsync(
-                            silent: true);
-
-                    if (target is MapPoint targetPoint)
-                    {
-                        var changed =
-                            !TryPoint(
-                                _targetX,
-                                _targetY,
-                                out var oldTarget) ||
-                            oldTarget.DistanceMeters(
-                                targetPoint) > 12;
-
-                        if (!changed)
-                        {
-                            _pendingTargetPoint = null;
-                            _pendingTargetSamples = 0;
-                        }
-                        else
-                        {
-                            if (_pendingTargetPoint is MapPoint pending &&
-                                pending.DistanceMeters(
-                                    targetPoint) <= 20)
-                            {
-                                _pendingTargetSamples++;
-                            }
-                            else
-                            {
-                                _pendingTargetPoint =
-                                    targetPoint;
-                                _pendingTargetSamples = 1;
-                            }
-
-                            if (_pendingTargetSamples >= 2)
-                            {
-                                SetTarget(targetPoint);
-                                _pendingTargetPoint = null;
-                                _pendingTargetSamples = 0;
-                                await PlanRouteAsync(false);
-                            }
-                        }
-                    }
+                    _ =
+                        RefreshLiveTargetAsync();
                 }
-        
+
                 if (_route == null)
                 {
                     await PlanRouteAsync(false);
