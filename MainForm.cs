@@ -1147,7 +1147,10 @@ public sealed class MainForm : Form
                     speed);
             }
 
-            var cue = _guidance.BuildCue(self, _headingDeg);
+            var cue = _guidance.BuildCue(
+                self,
+                _headingDeg,
+                speed);
 
             _routeSummary.Text =
                 "路线：" + _route.DistanceKm.ToString("F2") + " km · ETA " +
@@ -1388,8 +1391,9 @@ public sealed class MainForm : Form
         {
             using var screenshot =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             var mapId =
                 _map.Text;
@@ -1563,7 +1567,10 @@ public sealed class MainForm : Form
     {
         try
         {
-            using var bitmap = _capture.Capture(_settings.GameWindowTitleContains, region);
+            using var bitmap = _capture.Capture(
+                CaptureSourceTitle(),
+                region,
+                _settings.CaptureBackend);
             var result =
                 await _ocr.RecognizeAsync(
                     bitmap,
@@ -1598,7 +1605,11 @@ public sealed class MainForm : Form
     private void ToggleLive()
     {
         _live = !_live;
-        _liveButton.Text = _live ? "停止实时导航" : "开始实时导航";
+        _liveButton.Text =
+            _live
+                ? "停止实时导航"
+                : "开始实时导航";
+        UpdateSystemStatus();
 
         if (_live)
         {
@@ -1700,12 +1711,7 @@ public sealed class MainForm : Form
                     _settings.TargetRegion.IsValid;
 
                 var targetScanSeconds =
-                    _settings.VisualTargetNavigationEnabled
-                        ? Math.Clamp(
-                            _settings.VisualTargetScanSeconds,
-                            2,
-                            15)
-                        : 4;
+                    EffectiveTargetScanSeconds();
 
                 if (_settings.AutoReadTarget &&
                     targetReadAvailable &&
@@ -1727,7 +1733,10 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                var cue = _guidance.BuildCue(now, _headingDeg);
+                var cue = _guidance.BuildCue(
+                    now,
+                    _headingDeg,
+                    _positionFilter.LastSpeedKmh);
 
                 if (cue.ShouldReroute &&
                     DateTime.UtcNow - _lastRerouteUtc >=
@@ -1942,8 +1951,9 @@ public sealed class MainForm : Form
 
             using var gameMap =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             MapPoint? current =
                 TryPoint(
@@ -1970,6 +1980,12 @@ public sealed class MainForm : Form
                     gameMap,
                     current,
                     target,
+                    _settings.AiVisionCacheSeconds,
+                    _settings.AiVisionMaxImageDimension,
+                    _settings.PerformanceMode ==
+                            RuntimePerformanceMode.LowPower
+                        ? "low"
+                        : "high",
                     localCts.Token);
 
             if (!_map.Text.Equals(
@@ -2313,8 +2329,9 @@ public sealed class MainForm : Form
         {
             using var screenshot =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             using var calibrator =
                 new TargetMarkerCalibrationForm(
@@ -2381,8 +2398,9 @@ public sealed class MainForm : Form
         {
             using var screenshot =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             var mapId =
                 _map.Text;
@@ -2519,7 +2537,7 @@ public sealed class MainForm : Form
     {
         var client =
             _capture.GetClientScreenRect(
-                _settings.GameWindowTitleContains);
+                CaptureSourceTitle());
 
         if (client == null)
         {
@@ -2565,10 +2583,10 @@ public sealed class MainForm : Form
 
     private void CalibrateRegion(bool player)
     {
-        var client = _capture.GetClientScreenRect(_settings.GameWindowTitleContains);
+        var client = _capture.GetClientScreenRect(CaptureSourceTitle());
         if (client == null)
         {
-            MessageBox.Show("未找到游戏窗口，请先确认窗口标题并使用窗口化/无边框。");
+            MessageBox.Show("未找到采集窗口，请检查游戏/OBS采集源标题。");
             return;
         }
 
@@ -2793,7 +2811,10 @@ public sealed class MainForm : Form
                 : "无";
 
         _calibrationStatus.Text =
-            "窗口：" + _settings.GameWindowTitleContains + "\r\n" +
+            "游戏窗口：" + _settings.GameWindowTitleContains + "\r\n" +
+            "采集源：" + CaptureSourceTitle() +
+            " · " + _settings.CaptureBackend +
+            " · " + _settings.PerformanceMode + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
             "目标坐标 OCR 区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
             "游戏地图视觉区域：" + FormatRegion(_settings.VisionMapRegion) + "\r\n" +
@@ -2801,6 +2822,84 @@ public sealed class MainForm : Form
             "当前地图视觉记忆：" + registration +
             " · 成功 " + memory.SuccessfulRegistrations +
             " / 失败 " + memory.FailedRegistrations;
+    }
+
+    private string CaptureSourceTitle()
+    {
+        return string.IsNullOrWhiteSpace(
+                _settings.CaptureWindowTitleContains)
+            ? _settings.GameWindowTitleContains
+            : _settings.CaptureWindowTitleContains;
+    }
+
+    private int EffectiveTargetScanSeconds()
+    {
+        var configured =
+            _settings.VisualTargetNavigationEnabled
+                ? Math.Clamp(
+                    _settings.VisualTargetScanSeconds,
+                    2,
+                    15)
+                : 4;
+
+        return _settings.PerformanceMode switch
+        {
+            RuntimePerformanceMode.LowPower =>
+                Math.Max(5, configured),
+            RuntimePerformanceMode.Realtime =>
+                Math.Max(2, Math.Min(3, configured)),
+            _ =>
+                configured
+        };
+    }
+
+    private void ApplyPerformanceMode()
+    {
+        _liveTimer.Interval =
+            _settings.PerformanceMode switch
+            {
+                RuntimePerformanceMode.LowPower => 1500,
+                RuntimePerformanceMode.Realtime => 700,
+                _ => 1000
+            };
+    }
+
+    private void UpdateSystemStatus()
+    {
+        try
+        {
+            var perf =
+                _performance.Sample();
+
+            var mode =
+                _live
+                    ? "LIVE"
+                    : _traceLearning.IsRecording
+                        ? "LEARN"
+                        : "IDLE";
+
+            _systemStatus.Text =
+                mode +
+                "  ·  " +
+                _settings.PerformanceMode +
+                "  ·  CPU " +
+                perf.CpuPercent.ToString("F1") +
+                "%  ·  RAM " +
+                perf.WorkingSetMb.ToString("F0") +
+                " MB  ·  CAP " +
+                _capture.LastBackendUsed +
+                " " +
+                _capture.LastCaptureMilliseconds.ToString("F1") +
+                " ms  ·  AI缓存 " +
+                _aiVision.CacheHits +
+                "/" +
+                (_aiVision.CacheHits + _aiVision.CacheMisses);
+        }
+        catch
+        {
+            _systemStatus.Text =
+                "WARDOGS 0.10.0";
+        }
     }
 
     private static string FormatRegion(NormalizedRegion region)
