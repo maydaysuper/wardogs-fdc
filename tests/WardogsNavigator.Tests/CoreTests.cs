@@ -1,3 +1,4 @@
+using System.Drawing;
 using WardogsNavigator.Services;
 using Xunit;
 
