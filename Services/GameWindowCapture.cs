@@ -122,18 +122,55 @@ public sealed class GameWindowCapture
             // fails, try PrintWindow (useful for OBS projector/preview windows).
             try
             {
-                var screen = CaptureFromScreen(hwnd, clientSize, crop);
-                LastBackendUsed = "ScreenCopy";
-                return screen;
+                var screen =
+                    CaptureFromScreen(
+                        hwnd,
+                        clientSize,
+                        crop);
+
+                if (!IsProbablyBlank(screen))
+                {
+                    LastBackendUsed = "ScreenCopy";
+                    return screen;
+                }
+
+                screen.Dispose();
+
+                var printed =
+                    TryCaptureClientPrintWindow(
+                        hwnd,
+                        clientSize);
+
+                if (printed != null)
+                {
+                    LastBackendUsed =
+                        "PrintWindow(auto-fallback)";
+
+                    using (printed)
+                        return Crop(
+                            printed,
+                            crop);
+                }
+
+                throw new InvalidOperationException(
+                    "屏幕采集结果疑似黑帧，PrintWindow 回退也失败。");
             }
             catch
             {
-                var printed = TryCaptureClientPrintWindow(hwnd, clientSize);
+                var printed =
+                    TryCaptureClientPrintWindow(
+                        hwnd,
+                        clientSize);
+
                 if (printed != null)
                 {
-                    LastBackendUsed = "PrintWindow";
+                    LastBackendUsed =
+                        "PrintWindow(auto-fallback)";
+
                     using (printed)
-                        return Crop(printed, crop);
+                        return Crop(
+                            printed,
+                            crop);
                 }
 
                 throw;
@@ -271,6 +308,77 @@ public sealed class GameWindowCapture
         {
             return null;
         }
+    }
+
+    private static bool IsProbablyBlank(
+        Bitmap bitmap)
+    {
+        if (bitmap.Width < 2 ||
+            bitmap.Height < 2)
+            return true;
+
+        var min = 255;
+        var max = 0;
+        long sum = 0;
+        var count = 0;
+
+        const int grid = 8;
+
+        for (var gy = 0;
+             gy < grid;
+             gy++)
+        {
+            var y =
+                (int)Math.Round(
+                    gy /
+                    (double)(grid - 1) *
+                    (bitmap.Height - 1));
+
+            for (var gx = 0;
+                 gx < grid;
+                 gx++)
+            {
+                var x =
+                    (int)Math.Round(
+                        gx /
+                        (double)(grid - 1) *
+                        (bitmap.Width - 1));
+
+                var color =
+                    bitmap.GetPixel(
+                        x,
+                        y);
+
+                var luminance =
+                    (
+                        color.R * 3 +
+                        color.G * 6 +
+                        color.B
+                    ) /
+                    10;
+
+                min = Math.Min(
+                    min,
+                    luminance);
+
+                max = Math.Max(
+                    max,
+                    luminance);
+
+                sum += luminance;
+                count++;
+            }
+        }
+
+        var average =
+            count == 0
+                ? 0
+                : sum /
+                  (double)count;
+
+        return
+            average < 4 ||
+            max - min < 3;
     }
 
     private static Bitmap Crop(Bitmap source, Rectangle crop)
