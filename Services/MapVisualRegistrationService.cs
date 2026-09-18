@@ -3,6 +3,13 @@ using System.Drawing.Drawing2D;
 
 namespace WardogsNavigator.Services;
 
+/// <summary>
+/// Local visual registration between the in-game map viewport and the cached
+/// tactical map. The transform supports translation, scale and arbitrary
+/// rotation. Global acquisition keeps several coarse hypotheses and refines
+/// them independently so repetitive road patterns do not trap the search in
+/// the first local maximum.
+/// </summary>
 public sealed class MapVisualRegistrationService
 {
     private readonly MapAssetService _maps;
@@ -10,8 +17,7 @@ public sealed class MapVisualRegistrationService
         new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public MapVisualRegistrationService(
-        MapAssetService maps)
+    public MapVisualRegistrationService(MapAssetService maps)
     {
         _maps = maps;
     }
@@ -26,10 +32,9 @@ public sealed class MapVisualRegistrationService
 
         try
         {
-            var baseFeature =
-                await GetBaseFeatureAsync(
-                    mapId,
-                    cancellationToken);
+            var baseFeature = await GetBaseFeatureAsync(
+                mapId,
+                cancellationToken);
 
             if (baseFeature == null)
                 return null;
@@ -56,11 +61,7 @@ public sealed class MapVisualRegistrationService
         MapViewportRegistration? hint = null,
         CancellationToken cancellationToken = default)
     {
-        var baseFeature =
-            FeatureImage.FromBitmap(
-                baseMap,
-                192);
-
+        var baseFeature = FeatureImage.FromBitmap(baseMap, 220);
         return RegisterFeatures(
             mapId,
             baseFeature,
@@ -76,72 +77,81 @@ public sealed class MapVisualRegistrationService
         MapViewportRegistration? hint,
         CancellationToken cancellationToken)
     {
-        var screenFeature =
-            FeatureImage.FromBitmap(
-                screenshot,
-                144);
-
-        Candidate best =
-            default;
+        var screenFeature = FeatureImage.FromBitmap(screenshot, 160);
 
         if (hint?.IsValid == true)
         {
-            best = SearchNearHint(
+            var local = SearchNearHint(
                 screenFeature,
                 baseFeature,
                 hint,
                 cancellationToken);
 
-            if (best.Score >= 0.38)
-                return ToRegistration(
-                    mapId,
-                    best);
+            if (local.Score >= 0.38)
+                return ToRegistration(mapId, local);
         }
 
-        best = SearchGlobal(
+        var seeds = SearchGlobalCandidates(
             screenFeature,
             baseFeature,
             cancellationToken);
 
-        if (best.Score <= -0.90)
+        if (seeds.Count == 0)
             return null;
 
-        best = Refine(
-            screenFeature,
-            baseFeature,
-            best,
-            cancellationToken);
+        Candidate best = default;
+        best = best with { Score = -1 };
 
-        return ToRegistration(
-            mapId,
-            best);
+        foreach (var seed in seeds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var refined = Refine(
+                screenFeature,
+                baseFeature,
+                seed,
+                cancellationToken);
+
+            // Final comparison uses a denser sampling grid than the coarse
+            // acquisition. This is important on maps with repeated road
+            // motifs where several coarse candidates can look similar.
+            var finalScore = Score(
+                screenFeature,
+                baseFeature,
+                refined.Left,
+                refined.Top,
+                refined.Width,
+                refined.Height,
+                refined.RotationDeg,
+                30);
+
+            refined = refined with { Score = finalScore };
+
+            if (refined.Score > best.Score)
+                best = refined;
+        }
+
+        return best.Score <= -0.90
+            ? null
+            : ToRegistration(mapId, best);
     }
 
     private async Task<FeatureImage?> GetBaseFeatureAsync(
         string mapId,
         CancellationToken cancellationToken)
     {
-        if (_baseFeatures.TryGetValue(
-                mapId,
-                out var cached))
+        if (_baseFeatures.TryGetValue(mapId, out var cached))
             return cached;
 
-        var bitmap =
-            await _maps.GetBitmapAsync(
-                mapId,
-                cancellationToken);
+        var bitmap = await _maps.GetBitmapAsync(
+            mapId,
+            cancellationToken);
 
         if (bitmap == null)
             return null;
 
-        var feature =
-            FeatureImage.FromBitmap(
-                bitmap,
-                192);
-
-        _baseFeatures[mapId] =
-            feature;
-
+        var feature = FeatureImage.FromBitmap(bitmap, 220);
+        _baseFeatures[mapId] = feature;
         return feature;
     }
 
@@ -151,97 +161,52 @@ public sealed class MapVisualRegistrationService
         MapViewportRegistration hint,
         CancellationToken ct)
     {
-        var best =
-            new Candidate
-            {
-                Score = -1,
-                RotationDeg =
-                    NormalizeRotation(
-                        hint.RotationDeg)
-            };
+        var candidates = new List<Candidate>();
 
-        var widthFactors =
-            new[]
-            {
-                0.90,
-                0.95,
-                1.00,
-                1.05,
-                1.10
-            };
+        var widthFactors = new[]
+        {
+            0.90, 0.95, 1.00, 1.05, 1.10
+        };
 
-        var rotationOffsets =
-            new[]
-            {
-                -12.0,
-                -6.0,
-                0.0,
-                6.0,
-                12.0
-            };
+        var rotationOffsets = new[]
+        {
+            -18.0, -12.0, -6.0, 0.0, 6.0, 12.0, 18.0
+        };
 
         foreach (var widthFactor in widthFactors)
         {
             ct.ThrowIfCancellationRequested();
 
-            var width =
-                Math.Clamp(
-                    hint.Width01 *
-                    widthFactor,
-                    0.16,
-                    1.0);
+            var width = Math.Clamp(
+                hint.Width01 * widthFactor,
+                0.15,
+                1.0);
 
-            var height =
-                HeightFor(
-                    width,
-                    screen,
-                    map);
-
+            var height = HeightFor(width, screen, map);
             if (height > 1)
                 continue;
 
-            var stepX =
-                Math.Max(
-                    0.006,
-                    width * 0.055);
+            var stepX = Math.Max(0.005, width * 0.050);
+            var stepY = Math.Max(0.005, height * 0.050);
 
-            var stepY =
-                Math.Max(
-                    0.006,
-                    height * 0.055);
-
-            foreach (var rotationOffset in rotationOffsets)
+            foreach (var offset in rotationOffsets)
             {
-                var rotation =
-                    NormalizeRotation(
-                        hint.RotationDeg +
-                        rotationOffset);
+                var rotation = NormalizeRotation(
+                    hint.RotationDeg + offset);
 
-                for (var oy = -2;
-                     oy <= 2;
-                     oy++)
+                for (var oy = -2; oy <= 2; oy++)
                 {
-                    for (var ox = -2;
-                         ox <= 2;
-                         ox++)
+                    for (var ox = -2; ox <= 2; ox++)
                     {
-                        var left =
-                            Math.Clamp(
-                                hint.Left01 +
-                                ox * stepX,
-                                0,
-                                Math.Max(
-                                    0,
-                                    1 - width));
+                        var left = Math.Clamp(
+                            hint.Left01 + ox * stepX,
+                            0,
+                            Math.Max(0, 1 - width));
 
-                        var top =
-                            Math.Clamp(
-                                hint.Top01 +
-                                oy * stepY,
-                                0,
-                                Math.Max(
-                                    0,
-                                    1 - height));
+                        var top = Math.Clamp(
+                            hint.Top01 + oy * stepY,
+                            0,
+                            Math.Max(0, 1 - height));
 
                         if (!CandidateInsideMap(
                                 left,
@@ -251,127 +216,95 @@ public sealed class MapVisualRegistrationService
                                 rotation))
                             continue;
 
-                        var score =
-                            Score(
-                                screen,
-                                map,
+                        var score = Score(
+                            screen,
+                            map,
+                            left,
+                            top,
+                            width,
+                            height,
+                            rotation,
+                            22);
+
+                        AddCandidate(
+                            candidates,
+                            new Candidate(
                                 left,
                                 top,
                                 width,
                                 height,
-                                rotation);
-
-                        if (score >
-                            best.Score)
-                        {
-                            best =
-                                new Candidate
-                                {
-                                    Left = left,
-                                    Top = top,
-                                    Width = width,
-                                    Height = height,
-                                    RotationDeg =
-                                        rotation,
-                                    Score = score
-                                };
-                        }
+                                rotation,
+                                score),
+                            5);
                     }
                 }
             }
         }
 
-        return best.Score > -0.95
-            ? Refine(
-                screen,
-                map,
-                best,
-                ct)
-            : best;
+        if (candidates.Count == 0)
+            return new Candidate(0, 0, 1, 1, 0, -1);
+
+        Candidate best = new(0, 0, 1, 1, 0, -1);
+
+        foreach (var seed in candidates)
+        {
+            var refined = Refine(screen, map, seed, ct);
+            if (refined.Score > best.Score)
+                best = refined;
+        }
+
+        return best;
     }
 
-    private static Candidate SearchGlobal(
+    private static List<Candidate> SearchGlobalCandidates(
         FeatureImage screen,
         FeatureImage map,
         CancellationToken ct)
     {
-        var best =
-            new Candidate
-            {
-                Score = -1
-            };
+        const int keep = 10;
+        var best = new List<Candidate>(keep);
 
-        var widths =
-            new[]
-            {
-                1.00,
-                0.90,
-                0.80,
-                0.70,
-                0.61,
-                0.53,
-                0.46,
-                0.39,
-                0.33,
-                0.28,
-                0.24
-            };
+        var widths = new[]
+        {
+            1.00, 0.90, 0.80, 0.70, 0.61, 0.54, 0.48,
+            0.43, 0.38, 0.34, 0.30, 0.27, 0.24
+        };
 
-        var rotations =
-            new[]
-            {
-                0.0,
-                45.0,
-                90.0,
-                135.0,
-                180.0,
-                -135.0,
-                -90.0,
-                -45.0
-            };
+        // 30-degree global seeds guarantee that a 31-degree view starts near
+        // the correct basin. The expensive fine search only runs for Top-N
+        // candidates and remembered views use SearchNearHint instead.
+        var rotations = new[]
+        {
+            0.0,
+            30.0,
+            60.0,
+            90.0,
+            120.0,
+            150.0,
+            180.0,
+            -150.0,
+            -120.0,
+            -90.0,
+            -60.0,
+            -30.0
+        };
 
         foreach (var width in widths)
         {
             ct.ThrowIfCancellationRequested();
 
-            var height =
-                HeightFor(
-                    width,
-                    screen,
-                    map);
-
+            var height = HeightFor(width, screen, map);
             if (height > 1.001)
                 continue;
 
-            var stepX =
-                Math.Max(
-                    0.015,
-                    width * 0.15);
+            // Denser spatial seeds than v0.9.0's original 15% step. Refine()
+            // can then converge without needing to jump between distant local
+            // maxima.
+            var stepX = Math.Max(0.012, width * 0.115);
+            var stepY = Math.Max(0.012, height * 0.115);
 
-            var stepY =
-                Math.Max(
-                    0.015,
-                    height * 0.15);
-
-            var maxLeft =
-                Math.Max(
-                    0,
-                    1 - width);
-
-            var maxTop =
-                Math.Max(
-                    0,
-                    1 - height);
-
-            var xs =
-                Positions(
-                    maxLeft,
-                    stepX);
-
-            var ys =
-                Positions(
-                    maxTop,
-                    stepY);
+            var xs = Positions(Math.Max(0, 1 - width), stepX);
+            var ys = Positions(Math.Max(0, 1 - height), stepY);
 
             foreach (var rotation in rotations)
             {
@@ -387,38 +320,72 @@ public sealed class MapVisualRegistrationService
                                 rotation))
                             continue;
 
-                        var score =
-                            Score(
-                                screen,
-                                map,
+                        var score = Score(
+                            screen,
+                            map,
+                            left,
+                            top,
+                            width,
+                            height,
+                            rotation,
+                            20);
+
+                        AddCandidate(
+                            best,
+                            new Candidate(
                                 left,
                                 top,
                                 width,
                                 height,
                                 rotation,
-                                22);
-
-                        if (score >
-                            best.Score)
-                        {
-                            best =
-                                new Candidate
-                                {
-                                    Left = left,
-                                    Top = top,
-                                    Width = width,
-                                    Height = height,
-                                    RotationDeg =
-                                        rotation,
-                                    Score = score
-                                };
-                        }
+                                score),
+                            keep);
                     }
                 }
             }
         }
 
-        return best;
+        return best
+            .OrderByDescending(x => x.Score)
+            .ToList();
+    }
+
+    private static void AddCandidate(
+        List<Candidate> candidates,
+        Candidate candidate,
+        int keep)
+    {
+        if (!double.IsFinite(candidate.Score) || candidate.Score <= -0.95)
+            return;
+
+        // Avoid spending refinement work on several virtually identical
+        // hypotheses from neighbouring coarse grid cells.
+        var duplicate = candidates.Any(x =>
+            Math.Abs(x.Left - candidate.Left) < 0.018 &&
+            Math.Abs(x.Top - candidate.Top) < 0.018 &&
+            Math.Abs(x.Width - candidate.Width) < 0.025 &&
+            RotationDistance(x.RotationDeg, candidate.RotationDeg) < 12);
+
+        if (duplicate)
+        {
+            var index = candidates.FindIndex(x =>
+                Math.Abs(x.Left - candidate.Left) < 0.018 &&
+                Math.Abs(x.Top - candidate.Top) < 0.018 &&
+                Math.Abs(x.Width - candidate.Width) < 0.025 &&
+                RotationDistance(x.RotationDeg, candidate.RotationDeg) < 12);
+
+            if (index >= 0 && candidate.Score > candidates[index].Score)
+                candidates[index] = candidate;
+        }
+        else
+        {
+            candidates.Add(candidate);
+        }
+
+        candidates.Sort((a, b) => b.Score.CompareTo(a.Score));
+
+        if (candidates.Count > keep)
+            candidates.RemoveRange(keep, candidates.Count - keep);
     }
 
     private static Candidate Refine(
@@ -429,101 +396,59 @@ public sealed class MapVisualRegistrationService
     {
         var best = seed;
 
-        for (var pass = 0;
-             pass < 3;
-             pass++)
+        for (var pass = 0; pass < 4; pass++)
         {
             ct.ThrowIfCancellationRequested();
 
-            var scaleStep =
-                pass switch
-                {
-                    0 => 0.045,
-                    1 => 0.020,
-                    _ => 0.008
-                };
+            var scaleStep = pass switch
+            {
+                0 => 0.055,
+                1 => 0.026,
+                2 => 0.012,
+                _ => 0.005
+            };
 
-            var rotationStep =
-                pass switch
-                {
-                    0 => 12.0,
-                    1 => 5.0,
-                    _ => 2.0
-                };
+            var rotationStep = pass switch
+            {
+                0 => 10.0,
+                1 => 4.0,
+                2 => 1.5,
+                _ => 0.6
+            };
 
-            var moveX =
-                Math.Max(
-                    0.002,
-                    best.Width *
-                    scaleStep);
-
-            var moveY =
-                Math.Max(
-                    0.002,
-                    best.Height *
-                    scaleStep);
-
+            var moveX = Math.Max(0.0015, best.Width * scaleStep);
+            var moveY = Math.Max(0.0015, best.Height * scaleStep);
             var current = best;
 
-            for (var sw = -1;
-                 sw <= 1;
-                 sw++)
+            for (var sw = -1; sw <= 1; sw++)
             {
-                var width =
-                    Math.Clamp(
-                        current.Width *
-                        (
-                            1 +
-                            sw *
-                            scaleStep
-                        ),
-                        0.15,
-                        1);
+                var width = Math.Clamp(
+                    current.Width * (1 + sw * scaleStep),
+                    0.14,
+                    1.0);
 
-                var height =
-                    HeightFor(
-                        width,
-                        screen,
-                        map);
-
+                var height = HeightFor(width, screen, map);
                 if (height > 1)
                     continue;
 
-                for (var sr = -2;
-                     sr <= 2;
-                     sr++)
+                for (var sr = -2; sr <= 2; sr++)
                 {
-                    var rotation =
-                        NormalizeRotation(
-                            current.RotationDeg +
-                            sr *
-                            rotationStep);
+                    var rotation = NormalizeRotation(
+                        current.RotationDeg + sr * rotationStep);
 
-                    for (var oy = -2;
-                         oy <= 2;
-                         oy++)
+                    for (var oy = -2; oy <= 2; oy++)
                     {
-                        for (var ox = -2;
-                             ox <= 2;
-                             ox++)
+                        for (var ox = -2; ox <= 2; ox++)
                         {
-                            var left =
-                                Math.Clamp(
-                                    current.Left +
-                                    ox * moveX,
-                                    0,
-                                    Math.Max(
-                                        0,
-                                        1 - width));
+                            var left = Math.Clamp(
+                                current.Left + ox * moveX,
+                                0,
+                                Math.Max(0, 1 - width));
 
-                            var top =
-                                Math.Clamp(
-                                    current.Top +
-                                    oy * moveY,
-                                    0,
-                                    Math.Max(
-                                        0,
-                                        1 - height));
+                            var top = Math.Clamp(
+                                current.Top + oy * moveY,
+                                0,
+                                Math.Max(0, 1 - height));
 
                             if (!CandidateInsideMap(
                                     left,
@@ -533,31 +458,25 @@ public sealed class MapVisualRegistrationService
                                     rotation))
                                 continue;
 
-                            var score =
-                                Score(
-                                    screen,
-                                    map,
+                            var score = Score(
+                                screen,
+                                map,
+                                left,
+                                top,
+                                width,
+                                height,
+                                rotation,
+                                pass >= 2 ? 28 : 24);
+
+                            if (score > best.Score)
+                            {
+                                best = new Candidate(
                                     left,
                                     top,
                                     width,
                                     height,
                                     rotation,
-                                    24);
-
-                            if (score >
-                                best.Score)
-                            {
-                                best =
-                                    new Candidate
-                                    {
-                                        Left = left,
-                                        Top = top,
-                                        Width = width,
-                                        Height = height,
-                                        RotationDeg =
-                                            rotation,
-                                        Score = score
-                                    };
+                                    score);
                             }
                         }
                     }
@@ -573,45 +492,22 @@ public sealed class MapVisualRegistrationService
         FeatureImage screen,
         FeatureImage map)
     {
-        var screenAspect =
-            screen.Height /
-            (double)Math.Max(
-                1,
-                screen.Width);
-
-        var mapAspectCorrection =
-            map.Width /
-            (double)Math.Max(
-                1,
-                map.Height);
-
-        return width01 *
-               screenAspect *
-               mapAspectCorrection;
+        var screenAspect = screen.Height / (double)Math.Max(1, screen.Width);
+        var mapAspectCorrection = map.Width / (double)Math.Max(1, map.Height);
+        return width01 * screenAspect * mapAspectCorrection;
     }
 
-    private static IReadOnlyList<double> Positions(
-        double max,
-        double step)
+    private static IReadOnlyList<double> Positions(double max, double step)
     {
         if (max <= 0.00001)
-            return new[]
-            {
-                0.0
-            };
+            return new[] { 0.0 };
 
-        var result =
-            new List<double>();
+        var result = new List<double>();
 
-        for (var p = 0.0;
-             p < max;
-             p += step)
+        for (var p = 0.0; p < max; p += step)
             result.Add(p);
 
-        if (result.Count == 0 ||
-            Math.Abs(
-                result[^1] -
-                max) > 0.001)
+        if (result.Count == 0 || Math.Abs(result[^1] - max) > 0.001)
             result.Add(max);
 
         return result;
@@ -627,175 +523,81 @@ public sealed class MapVisualRegistrationService
         double rotationDeg,
         int grid = 20)
     {
-        var centerX =
-            left +
-            width * 0.5;
+        var centerX = left + width * 0.5;
+        var centerY = top + height * 0.5;
+        var radians = rotationDeg * Math.PI / 180.0;
+        var cos = Math.Cos(radians);
+        var sin = Math.Sin(radians);
 
-        var centerY =
-            top +
-            height * 0.5;
+        var edgeCorrelation = new RunningCorrelation();
+        var grayCorrelation = new RunningCorrelation();
 
-        var radians =
-            rotationDeg *
-            Math.PI /
-            180.0;
-
-        var cos =
-            Math.Cos(radians);
-
-        var sin =
-            Math.Sin(radians);
-
-        var edgeA =
-            new RunningCorrelation();
-
-        var grayA =
-            new RunningCorrelation();
-
-        for (var gy = 1;
-             gy < grid - 1;
-             gy++)
+        for (var gy = 1; gy < grid - 1; gy++)
         {
-            var v =
-                gy /
-                (double)(
-                    grid - 1);
+            var v = gy / (double)(grid - 1);
+            var sy = (int)Math.Round(v * (screen.Height - 1));
+            var localY = (v - 0.5) * height;
 
-            var sy =
-                (int)Math.Round(
-                    v *
-                    (screen.Height - 1));
-
-            var localY =
-                (v - 0.5) *
-                height;
-
-            for (var gx = 1;
-                 gx < grid - 1;
-                 gx++)
+            for (var gx = 1; gx < grid - 1; gx++)
             {
-                var u =
-                    gx /
-                    (double)(
-                        grid - 1);
+                var u = gx / (double)(grid - 1);
+                var sx = (int)Math.Round(u * (screen.Width - 1));
+                var localX = (u - 0.5) * width;
 
-                var sx =
-                    (int)Math.Round(
-                        u *
-                        (screen.Width - 1));
+                var mapX01 = centerX + localX * cos - localY * sin;
+                var mapY01 = centerY + localX * sin + localY * cos;
 
-                var localX =
-                    (u - 0.5) *
-                    width;
-
-                var mapX01 =
-                    centerX +
-                    localX * cos -
-                    localY * sin;
-
-                var mapY01 =
-                    centerY +
-                    localX * sin +
-                    localY * cos;
-
-                if (mapX01 < 0 ||
-                    mapY01 < 0 ||
-                    mapX01 > 1 ||
-                    mapY01 > 1)
+                if (mapX01 < 0 || mapY01 < 0 || mapX01 > 1 || mapY01 > 1)
                     continue;
 
-                var mx =
-                    mapX01 *
-                    (map.Width - 1);
+                var mx = mapX01 * (map.Width - 1);
+                var my = mapY01 * (map.Height - 1);
 
-                var my =
-                    mapY01 *
-                    (map.Height - 1);
+                edgeCorrelation.Add(
+                    screen.Edge[sy * screen.Width + sx],
+                    SampleBilinear(map.Edge, map.Width, map.Height, mx, my));
 
-                edgeA.Add(
-                    screen.Edge[
-                        sy *
-                        screen.Width +
-                        sx],
-                    SampleBilinear(
-                        map.Edge,
-                        map.Width,
-                        map.Height,
-                        mx,
-                        my));
-
-                grayA.Add(
-                    screen.Gray[
-                        sy *
-                        screen.Width +
-                        sx],
-                    SampleBilinear(
-                        map.Gray,
-                        map.Width,
-                        map.Height,
-                        mx,
-                        my));
+                grayCorrelation.Add(
+                    screen.Gray[sy * screen.Width + sx],
+                    SampleBilinear(map.Gray, map.Width, map.Height, mx, my));
             }
         }
 
-        var minimumSamples =
-            Math.Max(
-                20,
-                (grid - 2) *
-                (grid - 2) *
-                0.82);
+        var minimumSamples = Math.Max(
+            20,
+            (int)Math.Round((grid - 2) * (grid - 2) * 0.82));
 
-        if (edgeA.Count <
-            minimumSamples)
+        if (edgeCorrelation.Count < minimumSamples)
             return -1;
 
-        var edgeCorrelation =
-            edgeA.Correlation();
+        var edge = edgeCorrelation.Correlation();
+        var gray = grayCorrelation.Correlation();
 
-        var grayCorrelation =
-            grayA.Correlation();
-
-        if (!double.IsFinite(
-                edgeCorrelation))
+        if (!double.IsFinite(edge))
             return -1;
 
-        var combined =
-            double.IsFinite(
-                grayCorrelation)
-                ? edgeCorrelation * 0.76 +
-                  grayCorrelation * 0.24
-                : edgeCorrelation;
+        var combined = double.IsFinite(gray)
+            ? edge * 0.78 + gray * 0.22
+            : edge;
 
-        // Small regularization keeps an almost-identical unrotated solution
-        // ahead of a spurious heavily-rotated alias. A genuinely rotated map
-        // still wins easily through the image correlation term.
+        // Only a tiny regularizer is used. Correctly rotated imagery must be
+        // free to beat a visually similar north-up alias.
         var rotationPenalty =
-            Math.Abs(
-                NormalizeRotation(
-                    rotationDeg)) /
-            180.0 *
-            0.018;
+            Math.Abs(NormalizeRotation(rotationDeg)) / 180.0 * 0.008;
 
-        return Math.Clamp(
-            combined -
-            rotationPenalty,
-            -1,
-            1);
+        return Math.Clamp(combined - rotationPenalty, -1, 1);
     }
 
     private struct RunningCorrelation
     {
         public int Count { get; private set; }
-
         private double _sumA;
         private double _sumB;
         private double _sumAA;
         private double _sumBB;
         private double _sumAB;
 
-        public void Add(
-            double a,
-            double b)
+        public void Add(double a, double b)
         {
             Count++;
             _sumA += a;
@@ -810,33 +612,15 @@ public sealed class MapVisualRegistrationService
             if (Count < 4)
                 return double.NaN;
 
-            var covariance =
-                _sumAB -
-                _sumA *
-                _sumB /
-                Count;
+            var covariance = _sumAB - _sumA * _sumB / Count;
+            var varianceA = _sumAA - _sumA * _sumA / Count;
+            var varianceB = _sumBB - _sumB * _sumB / Count;
 
-            var varianceA =
-                _sumAA -
-                _sumA *
-                _sumA /
-                Count;
-
-            var varianceB =
-                _sumBB -
-                _sumB *
-                _sumB /
-                Count;
-
-            if (varianceA <= 1e-9 ||
-                varianceB <= 1e-9)
+            if (varianceA <= 1e-9 || varianceB <= 1e-9)
                 return double.NaN;
 
             return Math.Clamp(
-                covariance /
-                Math.Sqrt(
-                    varianceA *
-                    varianceB),
+                covariance / Math.Sqrt(varianceA * varianceB),
                 -1,
                 1);
         }
@@ -849,68 +633,20 @@ public sealed class MapVisualRegistrationService
         double x,
         double y)
     {
-        var x0 =
-            Math.Clamp(
-                (int)Math.Floor(x),
-                0,
-                width - 1);
+        var x0 = Math.Clamp((int)Math.Floor(x), 0, width - 1);
+        var y0 = Math.Clamp((int)Math.Floor(y), 0, height - 1);
+        var x1 = Math.Min(width - 1, x0 + 1);
+        var y1 = Math.Min(height - 1, y0 + 1);
+        var tx = Math.Clamp(x - x0, 0, 1);
+        var ty = Math.Clamp(y - y0, 0, 1);
 
-        var y0 =
-            Math.Clamp(
-                (int)Math.Floor(y),
-                0,
-                height - 1);
+        var a = data[y0 * width + x0] * (1 - tx) +
+                data[y0 * width + x1] * tx;
 
-        var x1 =
-            Math.Min(
-                width - 1,
-                x0 + 1);
+        var b = data[y1 * width + x0] * (1 - tx) +
+                data[y1 * width + x1] * tx;
 
-        var y1 =
-            Math.Min(
-                height - 1,
-                y0 + 1);
-
-        var tx =
-            Math.Clamp(
-                x - x0,
-                0,
-                1);
-
-        var ty =
-            Math.Clamp(
-                y - y0,
-                0,
-                1);
-
-        var a =
-            data[
-                y0 *
-                width +
-                x0] *
-            (1 - tx) +
-            data[
-                y0 *
-                width +
-                x1] *
-            tx;
-
-        var b =
-            data[
-                y1 *
-                width +
-                x0] *
-            (1 - tx) +
-            data[
-                y1 *
-                width +
-                x1] *
-            tx;
-
-        return a *
-               (1 - ty) +
-               b *
-               ty;
+        return a * (1 - ty) + b * ty;
     }
 
     private static bool CandidateInsideMap(
@@ -920,72 +656,43 @@ public sealed class MapVisualRegistrationService
         double height,
         double rotationDeg)
     {
-        var centerX =
-            left +
-            width * 0.5;
+        var centerX = left + width * 0.5;
+        var centerY = top + height * 0.5;
+        var radians = rotationDeg * Math.PI / 180.0;
+        var cos = Math.Cos(radians);
+        var sin = Math.Sin(radians);
 
-        var centerY =
-            top +
-            height * 0.5;
-
-        var radians =
-            rotationDeg *
-            Math.PI /
-            180.0;
-
-        var cos =
-            Math.Cos(radians);
-
-        var sin =
-            Math.Sin(radians);
-
-        var corners =
-            new[]
-            {
-                (-0.5, -0.5),
-                (0.5, -0.5),
-                (0.5, 0.5),
-                (-0.5, 0.5)
-            };
+        var corners = new[]
+        {
+            (-0.5, -0.5),
+            (0.5, -0.5),
+            (0.5, 0.5),
+            (-0.5, 0.5)
+        };
 
         foreach (var corner in corners)
         {
-            var lx =
-                corner.Item1 *
-                width;
+            var lx = corner.Item1 * width;
+            var ly = corner.Item2 * height;
+            var x = centerX + lx * cos - ly * sin;
+            var y = centerY + lx * sin + ly * cos;
 
-            var ly =
-                corner.Item2 *
-                height;
-
-            var x =
-                centerX +
-                lx * cos -
-                ly * sin;
-
-            var y =
-                centerY +
-                lx * sin +
-                ly * cos;
-
-            if (x < -0.001 ||
-                y < -0.001 ||
-                x > 1.001 ||
-                y > 1.001)
+            if (x < -0.001 || y < -0.001 || x > 1.001 || y > 1.001)
                 return false;
         }
 
         return true;
     }
 
-    private static double NormalizeRotation(
-        double degrees)
+    private static double RotationDistance(double a, double b) =>
+        Math.Abs(NormalizeRotation(a - b));
+
+    private static double NormalizeRotation(double degrees)
     {
         degrees %= 360;
 
         if (degrees > 180)
             degrees -= 360;
-
         if (degrees <= -180)
             degrees += 360;
 
@@ -996,15 +703,10 @@ public sealed class MapVisualRegistrationService
         string mapId,
         Candidate best)
     {
-        var confidence =
-            Math.Clamp(
-                (
-                    best.Score -
-                    0.05
-                ) /
-                0.58,
-                0,
-                1);
+        var confidence = Math.Clamp(
+            (best.Score - 0.05) / 0.58,
+            0,
+            1);
 
         return new MapViewportRegistration
         {
@@ -1016,151 +718,71 @@ public sealed class MapVisualRegistrationService
             RotationDeg = best.RotationDeg,
             RawScore = best.Score,
             Confidence = confidence,
-            RegisteredUtc =
-                DateTime.UtcNow
+            RegisteredUtc = DateTime.UtcNow
         };
     }
 
-    private readonly record struct Candidate
-    {
-        public double Left { get; init; }
-        public double Top { get; init; }
-        public double Width { get; init; }
-        public double Height { get; init; }
-        public double RotationDeg { get; init; }
-        public double Score { get; init; }
-    }
+    private readonly record struct Candidate(
+        double Left,
+        double Top,
+        double Width,
+        double Height,
+        double RotationDeg,
+        double Score);
 
     private sealed class FeatureImage
     {
         public int Width { get; init; }
         public int Height { get; init; }
-        public double[] Gray { get; init; } =
-            Array.Empty<double>();
+        public double[] Gray { get; init; } = Array.Empty<double>();
+        public double[] Edge { get; init; } = Array.Empty<double>();
 
-        public double[] Edge { get; init; } =
-            Array.Empty<double>();
-
-        public static FeatureImage FromBitmap(
-            Bitmap bitmap,
-            int maxDimension)
+        public static FeatureImage FromBitmap(Bitmap bitmap, int maxDimension)
         {
-            var scale =
-                Math.Min(
-                    1.0,
-                    maxDimension /
-                    (double)Math.Max(
-                        bitmap.Width,
-                        bitmap.Height));
+            var scale = Math.Min(
+                1.0,
+                maxDimension / (double)Math.Max(bitmap.Width, bitmap.Height));
 
-            var width =
-                Math.Max(
-                    24,
-                    (int)Math.Round(
-                        bitmap.Width *
-                        scale));
+            var width = Math.Max(24, (int)Math.Round(bitmap.Width * scale));
+            var height = Math.Max(24, (int)Math.Round(bitmap.Height * scale));
 
-            var height =
-                Math.Max(
-                    24,
-                    (int)Math.Round(
-                        bitmap.Height *
-                        scale));
+            using var scaled = new Bitmap(width, height);
 
-            using var scaled =
-                new Bitmap(
-                    width,
-                    height);
-
-            using (var g =
-                   Graphics.FromImage(scaled))
+            using (var g = Graphics.FromImage(scaled))
             {
-                g.InterpolationMode =
-                    InterpolationMode.HighQualityBilinear;
-
-                g.DrawImage(
-                    bitmap,
-                    new Rectangle(
-                        0,
-                        0,
-                        width,
-                        height));
+                g.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                g.DrawImage(bitmap, new Rectangle(0, 0, width, height));
             }
 
-            var gray =
-                new double[
-                    width *
-                    height];
+            var gray = new double[width * height];
 
-            for (var y = 0;
-                 y < height;
-                 y++)
+            for (var y = 0; y < height; y++)
             {
-                for (var x = 0;
-                     x < width;
-                     x++)
+                for (var x = 0; x < width; x++)
                 {
-                    var c =
-                        scaled.GetPixel(
-                            x,
-                            y);
-
-                    gray[
-                        y *
-                        width +
-                        x] =
-                        (
-                            c.R * 0.299 +
-                            c.G * 0.587 +
-                            c.B * 0.114
-                        ) /
-                        255.0;
+                    var color = scaled.GetPixel(x, y);
+                    gray[y * width + x] =
+                        (color.R * 0.299 +
+                         color.G * 0.587 +
+                         color.B * 0.114) / 255.0;
                 }
             }
 
-            var edge =
-                new double[
-                    width *
-                    height];
+            var edge = new double[width * height];
 
-            for (var y = 1;
-                 y + 1 < height;
-                 y++)
+            for (var y = 1; y + 1 < height; y++)
             {
-                for (var x = 1;
-                     x + 1 < width;
-                     x++)
+                for (var x = 1; x + 1 < width; x++)
                 {
-                    var gx =
-                        gray[
-                            y *
-                            width +
-                            x + 1] -
-                        gray[
-                            y *
-                            width +
-                            x - 1];
+                    var gx = gray[y * width + x + 1] -
+                             gray[y * width + x - 1];
 
-                    var gy =
-                        gray[
-                            (y + 1) *
-                            width +
-                            x] -
-                        gray[
-                            (y - 1) *
-                            width +
-                            x];
+                    var gy = gray[(y + 1) * width + x] -
+                             gray[(y - 1) * width + x];
 
-                    edge[
-                        y *
-                        width +
-                        x] =
-                        Math.Min(
-                            1,
-                            Math.Sqrt(
-                                gx * gx +
-                                gy * gy) *
-                            1.7);
+                    edge[y * width + x] = Math.Min(
+                        1,
+                        Math.Sqrt(gx * gx + gy * gy) * 1.7);
                 }
             }
 
