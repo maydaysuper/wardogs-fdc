@@ -906,6 +906,28 @@ public sealed class CoreTests
                         new Dictionary<string, double>
                         {
                             ["ural"] = 0.55
+                        },
+                    LocalVehicleSpeedLearning =
+                        new Dictionary<string, LocalSpeedLearningState>
+                        {
+                            ["ural"] = new()
+                            {
+                                ObservationCount = 6,
+                                EffectiveWeight = 12,
+                                MeanMultiplier = 0.55,
+                                Confidence = 0.95
+                            }
+                        },
+                    LocalVehicleSpeedLearning =
+                        new Dictionary<string, LocalSpeedLearningState>
+                        {
+                            ["ural"] = new()
+                            {
+                                ObservationCount = 6,
+                                EffectiveWeight = 12,
+                                MeanMultiplier = 0.55,
+                                Confidence = 0.95
+                            }
                         }
                 },
                 new()
