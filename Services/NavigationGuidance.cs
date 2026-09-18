@@ -176,7 +176,8 @@ public sealed class NavigationGuidanceTracker
 
     public NavigationMatch Update(
         MapPoint current,
-        double? headingDeg = null)
+        double? headingDeg = null,
+        double speedKmh = 0)
     {
         if (_route == null ||
             _route.Points.Count == 0)
@@ -200,8 +201,8 @@ public sealed class NavigationGuidanceTracker
                 ProjectedPoint = _route.Points[0],
                 DeviationMeters = d,
                 RemainingMeters = d,
-                OffRoute = d > WarningDeviationMeters,
-                ShouldReroute = d > 180
+                OffRoute = d > AdaptiveWarning(speedKmh),
+                ShouldReroute = d > AdaptiveImmediateReroute(speedKmh)
             };
         }
 
@@ -248,15 +249,22 @@ public sealed class NavigationGuidanceTracker
             _lastDistanceFromStartMeters - 12,
             best.DistanceFromStartMeters);
 
-        if (best.DeviationMeters >= RerouteDeviationMeters)
+        var warningThreshold =
+            AdaptiveWarning(speedKmh);
+
+        var rerouteThreshold =
+            AdaptiveReroute(speedKmh);
+
+        if (best.DeviationMeters >= rerouteThreshold)
             _offRouteSamples++;
-        else if (best.DeviationMeters <= WarningDeviationMeters)
+        else if (best.DeviationMeters <= warningThreshold)
             _offRouteSamples = 0;
         else
             _offRouteSamples = Math.Max(0, _offRouteSamples - 1);
 
         var shouldReroute =
-            best.DeviationMeters >= 180 ||
+            best.DeviationMeters >=
+                AdaptiveImmediateReroute(speedKmh) ||
             _offRouteSamples >= RequiredOffRouteSamples;
 
         var totalMeters =
@@ -303,7 +311,7 @@ public sealed class NavigationGuidanceTracker
             RemainingMinutes = remainingMinutes,
             OffRoute =
                 best.DeviationMeters >
-                WarningDeviationMeters,
+                warningThreshold,
             ShouldReroute = shouldReroute,
             ConsecutiveOffRouteSamples =
                 _offRouteSamples,
@@ -315,11 +323,13 @@ public sealed class NavigationGuidanceTracker
 
     public NavigationCue BuildCue(
         MapPoint current,
-        double? headingDeg = null)
+        double? headingDeg = null,
+        double speedKmh = 0)
     {
         var match = Update(
             current,
-            headingDeg);
+            headingDeg,
+            speedKmh);
 
         if (_route == null ||
             _route.Points.Count == 0)
@@ -398,6 +408,30 @@ public sealed class NavigationGuidanceTracker
                 match.ShouldReroute
         };
     }
+
+    private static double AdaptiveWarning(
+        double speedKmh) =>
+        Math.Clamp(
+            WarningDeviationMeters +
+            Math.Max(0, speedKmh) * 0.10,
+            WarningDeviationMeters,
+            62);
+
+    private static double AdaptiveReroute(
+        double speedKmh) =>
+        Math.Clamp(
+            RerouteDeviationMeters +
+            Math.Max(0, speedKmh) * 0.15,
+            RerouteDeviationMeters,
+            102);
+
+    private static double AdaptiveImmediateReroute(
+        double speedKmh) =>
+        Math.Clamp(
+            180 +
+            Math.Max(0, speedKmh) * 0.20,
+            180,
+            220);
 
     private SegmentMatch FindBestMatch(
         MapPoint current,
