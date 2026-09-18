@@ -376,10 +376,15 @@ public sealed class CoreTests
 
             Assert.Equal(1, applied);
             var edge = Assert.Single(graph.Edges);
-            Assert.Equal(0.10, edge.Risk, 6);
+            Assert.Equal(0, edge.Risk, 6);
+            Assert.Equal(0.10, edge.AiRiskAdjustment, 6);
             Assert.Equal(0.72, edge.VehicleSpeedMultipliers["ural"], 6);
             Assert.False(edge.VehicleSpeedMultipliers.ContainsKey("buggy"));
             Assert.Equal(0.90, edge.AiConfidence, 6);
+
+            Assert.Equal(1, store.RemoveAiLearning(graph));
+            Assert.Equal(0, edge.AiRiskAdjustment, 6);
+            Assert.Empty(edge.VehicleSpeedMultipliers);
         }
         finally
         {
