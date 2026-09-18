@@ -35,8 +35,13 @@ public sealed class AppSettings
     public string CurrentMap { get; set; } = "bakurani";
     public string DeepSeekModel { get; set; } = "deepseek-flash";
     public bool SpeakNavigation { get; set; } = true;
-    public bool AutoReadTarget { get; set; } = true;
+    public bool AutoReadTarget { get; set; } = false;
     public bool VisualTargetNavigationEnabled { get; set; }
+    public bool VisualContinuousLocalizationEnabled { get; set; } = true;
+    public int VisualHudSpeedScanMilliseconds { get; set; } = 1800;
+    public double VisualMapMatchMaxMeters { get; set; } = 140;
+    public NormalizedRegion DrivingViewRegion { get; set; } = new();
+    public NormalizedRegion SpeedHudRegion { get; set; } = new();
     public double VisualMapMinRegistrationConfidence { get; set; } = 0.42;
     public double VisualTargetMinConfidence { get; set; } = 0.54;
     public int VisualTargetScanSeconds { get; set; } = 3;
@@ -96,6 +101,8 @@ public sealed class AppSettings
         s.PlayerRegion ??= new NormalizedRegion();
         s.TargetRegion ??= new NormalizedRegion();
         s.VisionMapRegion ??= new NormalizedRegion();
+        s.DrivingViewRegion ??= new NormalizedRegion();
+        s.SpeedHudRegion ??= new NormalizedRegion();
 
         s.VisualMapMinRegistrationConfidence = Math.Clamp(
             s.VisualMapMinRegistrationConfidence <= 0
@@ -131,6 +138,20 @@ public sealed class AppSettings
                 : s.AiVisionMaxImageDimension,
             768,
             1920);
+
+        s.VisualHudSpeedScanMilliseconds = Math.Clamp(
+            s.VisualHudSpeedScanMilliseconds <= 0
+                ? 1800
+                : s.VisualHudSpeedScanMilliseconds,
+            600,
+            5000);
+
+        s.VisualMapMatchMaxMeters = Math.Clamp(
+            s.VisualMapMatchMaxMeters <= 0
+                ? 140
+                : s.VisualMapMatchMaxMeters,
+            60,
+            300);
 
         if (!Enum.IsDefined(s.CaptureBackend))
             s.CaptureBackend = CaptureBackendMode.Auto;
