@@ -14,11 +14,13 @@ public sealed class MainForm : Form
     private readonly EconomyEngine _economy = new();
     private readonly RoadGraphStore _roadGraphs = new();
     private readonly NavigationHazardStore _hazards = new();
+    private readonly NavigationVisionEvidenceStore _visionEvidence = new();
     private readonly NavigationExperienceStore _experiences = new();
     private readonly NavigationLearningSession _navigationLearning = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly AiNavigationLearningService _aiNavigationLearning;
+    private readonly AiVisionNavigationService _aiVision;
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -41,6 +43,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _model = new();
     private readonly TextBox _aiOutput = new();
     private readonly CheckBox _aiAutoApplyLearning = new();
+    private readonly CheckBox _aiAutoVisionScan = new();
     private readonly TextBox _windowTitle = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
@@ -65,13 +68,23 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
     private AiNavigationLearningReport? _lastAiLearningReport;
+    private AiVisionNavigationReport? _lastVisionReport;
     private bool _aiLearningBusy;
+    private bool _visionBusy;
+    private bool _liveTickBusy;
+    private DateTime _lastAutoVisionScan = DateTime.MinValue;
+    private CancellationTokenSource? _visionCts;
 
     public MainForm()
     {
-        _routes = new RoutePlanner(_mapAssets, _roadGraphs, _hazards);
+        _routes = new RoutePlanner(
+            _mapAssets,
+            _roadGraphs,
+            _hazards,
+            _visionEvidence);
         _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
         _aiNavigationLearning = new AiNavigationLearningService(_ai);
+        _aiVision = new AiVisionNavigationService(_ai, _mapAssets);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
@@ -95,6 +108,7 @@ public sealed class MainForm : Form
             _overlay.Close();
             _planCts?.Cancel();
             _autoRoadCts?.Cancel();
+            _visionCts?.Cancel();
         };
     }
 
@@ -524,6 +538,66 @@ public sealed class MainForm : Form
         learnRow.Controls.Add(clearLearning);
         p.Controls.Add(learnRow);
 
+        p.Controls.Add(Header("AI 视觉导航"));
+
+        _aiAutoVisionScan.Text = "实时导航时每 3 分钟自动视觉检查（实验）";
+        _aiAutoVisionScan.AutoSize = true;
+        _aiAutoVisionScan.ForeColor = Color.Gainsboro;
+        _aiAutoVisionScan.CheckedChanged += (_, _) =>
+        {
+            _settings.AiAutoVisionScan = _aiAutoVisionScan.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_aiAutoVisionScan);
+
+        var visionRow = new FlowLayoutPanel
+        {
+            Width = 420,
+            Height = 76,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        var analyzeVision = Btn("AI视觉检查当前路线");
+        analyzeVision.Click += async (_, _) =>
+            await AnalyzeVisionRouteAsync(
+                autoApply: false,
+                silent: false);
+
+        var applyVision = Btn("应用视觉风险并重算");
+        applyVision.Click += async (_, _) =>
+        {
+            ApplyLastVisionEvidence(0.80);
+            await PlanRouteAsync(false);
+        };
+
+        var clearVision = Btn("清除视觉风险");
+        clearVision.Click += async (_, _) =>
+        {
+            var removed = _visionEvidence.ClearMap(_map.Text);
+            _lastVisionReport = null;
+            UpdateVisionEvidence();
+            _aiOutput.Text =
+                "已清除当前地图 " +
+                removed +
+                " 条临时视觉证据。";
+            await PlanRouteAsync(false);
+        };
+
+        visionRow.Controls.Add(analyzeVision);
+        visionRow.Controls.Add(applyVision);
+        visionRow.Controls.Add(clearVision);
+        p.Controls.Add(visionRow);
+
+        p.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Width = 400,
+            Height = 72,
+            ForeColor = Color.Silver,
+            Text =
+                "视觉检查固定使用 deepseek-flash。只上传你在“校准”页框选的游戏地图区域；程序参考图只包含当前地图和当前路线。视觉风险默认 8 分钟后过期。"
+        });
+
         _aiOutput.Multiline = true;
         _aiOutput.ScrollBars = ScrollBars.Vertical;
         _aiOutput.Width = 400;
@@ -559,11 +633,15 @@ public sealed class MainForm : Form
         var target = Btn("框选目标坐标区域");
         target.Click += (_, _) => CalibrateRegion(false);
 
+        var visionMap = Btn("框选游戏地图视觉区域");
+        visionMap.Click += (_, _) => CalibrateVisionMapRegion();
+
         p.Controls.Add(self);
         p.Controls.Add(target);
+        p.Controls.Add(visionMap);
 
         _calibrationStatus.Width = 400;
-        _calibrationStatus.Height = 120;
+        _calibrationStatus.Height = 145;
         p.Controls.Add(_calibrationStatus);
 
         p.Controls.Add(new Label
@@ -574,6 +652,7 @@ public sealed class MainForm : Form
             ForeColor = Color.Silver,
             Text =
                 "校准区域按游戏窗口客户区比例保存，因此 1080p / 1440p / 4K 切换后仍可复用。\r\n\r\n" +
+                "“游戏地图视觉区域”只用于 AI 视觉检查；尽量框住地图本体并减少聊天框/菜单等遮挡。\r\n\r\n" +
                 "程序只抓取屏幕像素；不读取进程内存、不注入、不安装驱动。"
         });
 
@@ -646,6 +725,7 @@ public sealed class MainForm : Form
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
 
         _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
+        _aiAutoVisionScan.Checked = _settings.AiAutoVisionScan;
 
         UpdateCalibrationStatus();
     }
@@ -659,6 +739,10 @@ public sealed class MainForm : Form
         if (_autoExtractMapId != null &&
             !_autoExtractMapId.Equals(requestedMapId, StringComparison.OrdinalIgnoreCase))
             _autoRoadCts?.Cancel();
+
+        _visionCts?.Cancel();
+        _lastVisionReport = null;
+        _lastAutoVisionScan = DateTime.MinValue;
 
         if (_traceLearning.IsRecording)
         {
@@ -675,6 +759,7 @@ public sealed class MainForm : Form
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
         UpdateHazards();
+        UpdateVisionEvidence();
         UpdateRoadGraphStatus();
         UpdateMapState();
 
@@ -874,94 +959,122 @@ public sealed class MainForm : Form
 
     private async Task LiveTickAsync()
     {
+        if (_liveTickBusy)
+            return;
+
+        _liveTickBusy = true;
+
+        try
+        {
         if (!_live && !_traceLearning.IsRecording) return;
-
-        var current = await ReadRegionAsync(_settings.PlayerRegion);
-        if (current is not MapPoint now) return;
-
-        if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
-            _headingDeg = old.BearingDegTo(now);
-
-        _lastLivePoint = now;
-        SetSelf(now);
-        _navigationLearning.NotePoint(now);
-
-        if (_traceLearning.IsRecording)
-        {
-            _traceLearning.Accept(now);
-            UpdateRoadGraphStatus(
-                "实车学习中：已采样 " +
-                _traceLearning.RawPoints.Count +
-                " 个有效位置点。");
-        }
-
-        if (!_live)
-        {
-            UpdateMapState();
-            return;
-        }
-
-        if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
-        {
-            var target = await ReadRegionAsync(_settings.TargetRegion);
-            if (target is MapPoint targetPoint)
-            {
-                if (!TryPoint(_targetX, _targetY, out var oldTarget) ||
-                    oldTarget.DistanceMeters(targetPoint) > 12)
+        
+                var current = await ReadRegionAsync(_settings.PlayerRegion);
+                if (current is not MapPoint now) return;
+        
+                if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
+                    _headingDeg = old.BearingDegTo(now);
+        
+                _lastLivePoint = now;
+                SetSelf(now);
+                _navigationLearning.NotePoint(now);
+        
+                if (_traceLearning.IsRecording)
                 {
-                    SetTarget(targetPoint);
-                    await PlanRouteAsync(false);
+                    _traceLearning.Accept(now);
+                    UpdateRoadGraphStatus(
+                        "实车学习中：已采样 " +
+                        _traceLearning.RawPoints.Count +
+                        " 个有效位置点。");
                 }
-            }
-        }
-
-        if (_route == null)
-        {
-            await PlanRouteAsync(false);
-            return;
-        }
-
-        if (RoutePlanner.DistanceToRouteMeters(_route, now) > 150)
-        {
-            await PlanRouteAsync(false);
-            return;
-        }
-
-        var cue = RoutePlanner.BuildCue(_route, now, _headingDeg);
-        _overlay.UpdateCue(cue, _route);
-        UpdateMapState();
-
-        if (_settings.SpeakNavigation &&
-            !cue.Arrived &&
-            (cue.RouteIndex != _lastCueIndex ||
-             DateTime.UtcNow - _lastSpoken > TimeSpan.FromSeconds(20)))
-        {
-            _lastCueIndex = cue.RouteIndex;
-            _lastSpoken = DateTime.UtcNow;
-            Speak(cue.Instruction);
-        }
-        else if (cue.Arrived && cue.RouteIndex != _lastCueIndex)
-        {
-            _lastCueIndex = cue.RouteIndex;
-            Speak("已到达目的地");
-        }
-
-        if (cue.Arrived && _navigationLearning.IsActive)
-        {
-            StoreNavigationExperience(completed: true);
-
-            if (_settings.AiAutoApplyNavigationLearning &&
-                !string.IsNullOrWhiteSpace(_apiKey.Text))
-            {
-                var snapshot = _experiences.Snapshot(_map.Text);
-                if (snapshot.CompletedCount >= 3 &&
-                    snapshot.CompletedCount % 3 == 0)
+        
+                if (!_live)
                 {
-                    await AnalyzeNavigationLearningAsync(
+                    UpdateMapState();
+                    return;
+                }
+        
+                if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
+                {
+                    var target = await ReadRegionAsync(_settings.TargetRegion);
+                    if (target is MapPoint targetPoint)
+                    {
+                        if (!TryPoint(_targetX, _targetY, out var oldTarget) ||
+                            oldTarget.DistanceMeters(targetPoint) > 12)
+                        {
+                            SetTarget(targetPoint);
+                            await PlanRouteAsync(false);
+                        }
+                    }
+                }
+        
+                if (_route == null)
+                {
+                    await PlanRouteAsync(false);
+                    return;
+                }
+        
+                if (RoutePlanner.DistanceToRouteMeters(_route, now) > 150)
+                {
+                    await PlanRouteAsync(false);
+                    return;
+                }
+        
+                var cue = RoutePlanner.BuildCue(_route, now, _headingDeg);
+                _overlay.UpdateCue(cue, _route);
+                UpdateMapState();
+        
+                if (_settings.SpeakNavigation &&
+                    !cue.Arrived &&
+                    (cue.RouteIndex != _lastCueIndex ||
+                     DateTime.UtcNow - _lastSpoken > TimeSpan.FromSeconds(20)))
+                {
+                    _lastCueIndex = cue.RouteIndex;
+                    _lastSpoken = DateTime.UtcNow;
+                    Speak(cue.Instruction);
+                }
+                else if (cue.Arrived && cue.RouteIndex != _lastCueIndex)
+                {
+                    _lastCueIndex = cue.RouteIndex;
+                    Speak("已到达目的地");
+                }
+        
+                if (cue.Arrived && _navigationLearning.IsActive)
+                {
+                    StoreNavigationExperience(completed: true);
+        
+                    if (_settings.AiAutoApplyNavigationLearning &&
+                        !string.IsNullOrWhiteSpace(_apiKey.Text))
+                    {
+                        var snapshot = _experiences.Snapshot(_map.Text);
+                        if (snapshot.CompletedCount >= 3 &&
+                            snapshot.CompletedCount % 3 == 0)
+                        {
+                            await AnalyzeNavigationLearningAsync(
+                                autoApply: true,
+                                silent: true);
+                        }
+                    }
+                }
+        
+                if (!cue.Arrived &&
+                    _settings.AiAutoVisionScan &&
+                    _settings.VisionMapRegion.IsValid &&
+                    !string.IsNullOrWhiteSpace(_apiKey.Text) &&
+                    _route?.EdgeIds.Count > 0 &&
+                    !_visionBusy &&
+                    DateTime.UtcNow - _lastAutoVisionScan >
+                        TimeSpan.FromMinutes(3))
+                {
+                    _lastAutoVisionScan = DateTime.UtcNow;
+        
+                    await AnalyzeVisionRouteAsync(
                         autoApply: true,
                         silent: true);
                 }
-            }
+        }
+        finally
+        {
+            _liveTickBusy = false;
         }
     }
 
@@ -1020,6 +1133,224 @@ public sealed class MainForm : Form
         }
     }
 
+
+
+    private async Task AnalyzeVisionRouteAsync(
+        bool autoApply,
+        bool silent)
+    {
+        if (_visionBusy)
+            return;
+
+        if (_route == null || _route.EdgeIds.Count == 0)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "当前路线没有 Road Graph 路段，无法进行 edge 级视觉检查。";
+            return;
+        }
+
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "请先在“校准”页框选游戏地图视觉区域。";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_apiKey.Text))
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "请先保存 DeepSeek API Key。";
+            return;
+        }
+
+        var mapId = _map.Text;
+        var routeSnapshot = _route;
+        _visionBusy = true;
+
+        _visionCts?.Cancel();
+        _visionCts?.Dispose();
+
+        var localCts =
+            new CancellationTokenSource(
+                TimeSpan.FromSeconds(55));
+        _visionCts = localCts;
+
+        try
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "正在截取游戏地图并进行 DeepSeek 视觉对照…";
+
+            using var gameMap =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            MapPoint? current =
+                TryPoint(
+                    _selfX,
+                    _selfY,
+                    out var self)
+                    ? self
+                    : null;
+
+            MapPoint? target =
+                TryPoint(
+                    _targetX,
+                    _targetY,
+                    out var tgt)
+                    ? tgt
+                    : null;
+
+            var report =
+                await _aiVision.AnalyzeRouteAsync(
+                    _apiKey.Text,
+                    mapId,
+                    _currentRoadGraph,
+                    routeSnapshot,
+                    gameMap,
+                    current,
+                    target,
+                    localCts.Token);
+
+            if (!_map.Text.Equals(
+                    mapId,
+                    StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _lastVisionReport = report;
+
+            var applied = 0;
+
+            if (autoApply)
+            {
+                applied = ApplyVisionReport(
+                    report,
+                    _settings.AiVisionMinConfidence);
+            }
+
+            if (!silent)
+            {
+                var lines = report.Findings
+                    .OrderByDescending(x => x.Confidence)
+                    .Take(24)
+                    .Select(x =>
+                        x.EdgeId +
+                        " · " +
+                        x.Kind +
+                        " · 风险 " +
+                        Math.Round(
+                            x.Severity * 100)
+                            .ToString("F0") +
+                        "% · 置信 " +
+                        Math.Round(
+                            x.Confidence * 100)
+                            .ToString("F0") +
+                        "% · " +
+                        x.Reason)
+                    .ToList();
+
+                _aiOutput.Text =
+                    report.Summary +
+                    "\r\n\r\n" +
+                    (lines.Count == 0
+                        ? "视觉检查未发现需要标记的当前路线异常。"
+                        : string.Join(
+                            "\r\n",
+                            lines)) +
+                    (autoApply
+                        ? "\r\n\r\n已应用 " +
+                          applied +
+                          " 条高置信临时视觉证据。"
+                        : "");
+            }
+
+            if (autoApply && applied > 0)
+                await PlanRouteAsync(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "AI 视觉检查已取消/超时。";
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+                _aiOutput.Text =
+                    "AI 视觉检查失败：" +
+                    ex.Message;
+        }
+        finally
+        {
+            if (ReferenceEquals(
+                    _visionCts,
+                    localCts))
+            {
+                _visionCts = null;
+            }
+
+            localCts.Dispose();
+            _visionBusy = false;
+        }
+    }
+
+    private int ApplyVisionReport(
+        AiVisionNavigationReport report,
+        double minimumConfidence)
+    {
+        var validEdgeIds =
+            _currentRoadGraph.Edges
+                .Select(x => x.Id)
+                .ToHashSet(
+                    StringComparer.OrdinalIgnoreCase);
+
+        var ttl = TimeSpan.FromMinutes(
+            Math.Clamp(
+                _settings.AiVisionEvidenceMinutes,
+                1,
+                30));
+
+        var applied =
+            _visionEvidence.ApplyReport(
+                _map.Text,
+                report,
+                validEdgeIds,
+                minimumConfidence,
+                ttl);
+
+        UpdateVisionEvidence();
+        return applied;
+    }
+
+    private void ApplyLastVisionEvidence(
+        double minimumConfidence)
+    {
+        if (_lastVisionReport == null)
+        {
+            _aiOutput.Text =
+                "请先执行“AI视觉检查当前路线”。";
+            return;
+        }
+
+        var applied =
+            ApplyVisionReport(
+                _lastVisionReport,
+                minimumConfidence);
+
+        _aiOutput.Text =
+            _lastVisionReport.Summary +
+            "\r\n\r\n已应用 " +
+            applied +
+            " 条置信度 ≥ " +
+            Math.Round(
+                minimumConfidence * 100)
+                .ToString("F0") +
+            "% 的临时视觉证据。";
+    }
 
     private async Task AnalyzeNavigationLearningAsync(bool autoApply, bool silent)
     {
@@ -1145,6 +1476,23 @@ public sealed class MainForm : Form
 
         _experiences.Append(experience);
 
+        var provenEdges = experience.EdgeObservations
+            .Where(x =>
+                x.Samples >= 3 &&
+                x.DistanceKm >= 0.03 &&
+                x.MaxDeviationMeters <= 90)
+            .Select(x => x.EdgeId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (provenEdges.Count > 0)
+        {
+            _visionEvidence.ClearEdges(
+                experience.MapId,
+                provenEdges);
+            UpdateVisionEvidence();
+        }
+
         var changed = _roadGraphs.RecordNavigationExperience(
             _currentRoadGraph,
             experience);
@@ -1184,7 +1532,54 @@ public sealed class MainForm : Form
 
     private void UpdateHazards()
     {
-        _mapCanvas.SetHazards(_hazards.GetActive(_map.Text));
+        _mapCanvas.SetHazards(
+            _hazards.GetActive(_map.Text));
+    }
+
+    private void UpdateVisionEvidence()
+    {
+        _mapCanvas.SetVisionEvidence(
+            _visionEvidence.GetActive(
+                _map.Text));
+    }
+
+
+    private void CalibrateVisionMapRegion()
+    {
+        var client =
+            _capture.GetClientScreenRect(
+                _settings.GameWindowTitleContains);
+
+        if (client == null)
+        {
+            MessageBox.Show(
+                "未找到游戏窗口，请先确认窗口标题并使用窗口化/无边框。");
+            return;
+        }
+
+        using var selector =
+            new RegionSelectForm();
+
+        if (selector.ShowDialog(this) !=
+            DialogResult.OK)
+            return;
+
+        var normalized =
+            GameWindowCapture.ToNormalized(
+                selector.SelectedScreenRectangle,
+                client.Value);
+
+        if (!normalized.IsValid)
+        {
+            MessageBox.Show(
+                "地图视觉选区无效。");
+            return;
+        }
+
+        _settings.VisionMapRegion =
+            normalized;
+        _settings.Save();
+        UpdateCalibrationStatus();
     }
 
     private void CalibrateRegion(bool player)
@@ -1375,7 +1770,14 @@ public sealed class MainForm : Form
             " · 道路边 " + stats.Edges +
             " · 已验证 " + stats.VerifiedEdges +
             " · 实车学习 " + stats.LearnedEdges +
-            "\r\n网络总长 " + stats.NetworkKm.ToString("F2") + " km";
+            " · 自动 " + stats.AutoEdges +
+            " · AI学习 " + stats.AiLearnedEdges +
+            "\r\n网络总长 " +
+            stats.NetworkKm.ToString("F2") +
+            " km · 临时危险 " +
+            _hazards.GetActive(_map.Text).Count +
+            " · 视觉证据 " +
+            _visionEvidence.GetActive(_map.Text).Count;
     }
 
     private void UpdateCalibrationStatus()
@@ -1383,7 +1785,8 @@ public sealed class MainForm : Form
         _calibrationStatus.Text =
             "窗口：" + _settings.GameWindowTitleContains + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
-            "目标区域：" + FormatRegion(_settings.TargetRegion);
+            "目标区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
+            "AI地图视觉区域：" + FormatRegion(_settings.VisionMapRegion);
     }
 
     private static string FormatRegion(NormalizedRegion region)

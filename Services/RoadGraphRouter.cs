@@ -15,6 +15,7 @@ public sealed class RoadGraphRouter
         RoutePreference preference,
         VehicleRoutingProfile? vehicleProfile = null,
         IReadOnlyList<NavigationHazard>? hazards = null,
+        IReadOnlyDictionary<string, double>? visualEdgeRisks = null,
         double baseSpeedKmh = 80,
         double snapLimitMeters = DefaultSnapLimitMeters)
     {
@@ -23,6 +24,8 @@ public sealed class RoadGraphRouter
 
         vehicleProfile ??= VehicleRoutingProfileService.Generic();
         hazards ??= Array.Empty<NavigationHazard>();
+        visualEdgeRisks ??= new Dictionary<string, double>(
+            StringComparer.OrdinalIgnoreCase);
 
         var nodes = graph.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
         var usableEdges = graph.Edges
@@ -97,7 +100,8 @@ public sealed class RoadGraphRouter
                     nodes,
                     preference,
                     vehicleProfile,
-                    hazards);
+                    hazards,
+                    visualEdgeRisks);
 
                 if (graphPath == null) continue;
 
@@ -172,7 +176,8 @@ public sealed class RoadGraphRouter
         IReadOnlyDictionary<string, RoadNode> nodes,
         RoutePreference preference,
         VehicleRoutingProfile vehicleProfile,
-        IReadOnlyList<NavigationHazard> hazards)
+        IReadOnlyList<NavigationHazard> hazards,
+        IReadOnlyDictionary<string, double> visualEdgeRisks)
     {
         if (startId.Equals(endId, StringComparison.OrdinalIgnoreCase))
             return new GraphPath
@@ -227,7 +232,8 @@ public sealed class RoadGraphRouter
                     toNode.Position,
                     preference,
                     vehicleProfile,
-                    hazards);
+                    hazards,
+                    visualEdgeRisks);
                 var candidate = currentCost + edgeCost;
 
                 if (dist.TryGetValue(next.To, out var old) && candidate >= old)
@@ -277,7 +283,8 @@ public sealed class RoadGraphRouter
         MapPoint b,
         RoutePreference preference,
         VehicleRoutingProfile vehicleProfile,
-        IReadOnlyList<NavigationHazard> hazards)
+        IReadOnlyList<NavigationHazard> hazards,
+        IReadOnlyDictionary<string, double> visualEdgeRisks)
     {
         var km = a.DistanceKm(b);
 
@@ -308,10 +315,20 @@ public sealed class RoadGraphRouter
             edge.Risk + edge.AiRiskAdjustment,
             0,
             1);
+
+        var visualRisk = visualEdgeRisks.TryGetValue(
+            edge.Id,
+            out var visual)
+            ? Math.Clamp(visual, 0, 1)
+            : 0;
+
         var effectiveRisk = Math.Clamp(
-            staticRisk + hazardPenalty * (1.15 - vehicleProfile.RiskTolerance * 0.55),
+            staticRisk +
+            visualRisk * 1.25 +
+            hazardPenalty *
+            (1.15 - vehicleProfile.RiskTolerance * 0.55),
             0,
-            1.8);
+            2.2);
 
         return preference switch
         {

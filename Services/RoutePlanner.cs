@@ -11,6 +11,7 @@ public sealed class RoutePlanner
     private readonly MapAssetService _assets;
     private readonly RoadGraphStore _roadGraphs;
     private readonly NavigationHazardStore _hazards;
+    private readonly NavigationVisionEvidenceStore _visionEvidence;
     private readonly RoadGraphRouter _graphRouter = new();
     private readonly Dictionary<string, float[]> _costCache = new(StringComparer.OrdinalIgnoreCase);
     private const int Grid = 384;
@@ -18,11 +19,15 @@ public sealed class RoutePlanner
     public RoutePlanner(
         MapAssetService assets,
         RoadGraphStore? roadGraphs = null,
-        NavigationHazardStore? hazards = null)
+        NavigationHazardStore? hazards = null,
+        NavigationVisionEvidenceStore? visionEvidence = null)
     {
         _assets = assets;
         _roadGraphs = roadGraphs ?? new RoadGraphStore();
         _hazards = hazards ?? new NavigationHazardStore();
+        _visionEvidence =
+            visionEvidence ??
+            new NavigationVisionEvidenceStore();
     }
 
     public async Task<RoutePlan> PlanAsync(
@@ -51,6 +56,8 @@ public sealed class RoutePlanner
         {
             var graph = _roadGraphs.Load(mapId);
             var activeHazards = _hazards.GetActive(mapId);
+            var visualRisks = _visionEvidence.GetRiskMap(mapId);
+
             var graphRoute = _graphRouter.TryPlan(
                 graph,
                 start,
@@ -58,6 +65,7 @@ public sealed class RoutePlanner
                 preference,
                 vehicleProfile,
                 activeHazards,
+                visualRisks,
                 speedKmh);
 
             if (graphRoute != null &&
@@ -81,6 +89,9 @@ public sealed class RoutePlanner
                         " edges" +
                         (activeHazards.Count > 0
                             ? " · hazards " + activeHazards.Count
+                            : "") +
+                        (visualRisks.Count > 0
+                            ? " · vision " + visualRisks.Count
                             : ""),
                     VehicleProfileId = vehicleProfile.VehicleId,
                     EdgeIds = graphRoute.EdgeIds

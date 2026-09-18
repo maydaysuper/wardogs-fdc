@@ -12,6 +12,8 @@ public sealed class MapCanvas : Control
     private MapDefinition? _definition;
     private RoadGraph? _roadGraph;
     private IReadOnlyList<NavigationHazard> _hazards = Array.Empty<NavigationHazard>();
+    private IReadOnlyList<VisionEdgeEvidence> _visionEvidence =
+        Array.Empty<VisionEdgeEvidence>();
 
     public event Action<MapPoint>? MapClicked;
 
@@ -46,6 +48,15 @@ public sealed class MapCanvas : Control
     public void SetHazards(IReadOnlyList<NavigationHazard>? hazards)
     {
         _hazards = hazards ?? Array.Empty<NavigationHazard>();
+        Invalidate();
+    }
+
+    public void SetVisionEvidence(
+        IReadOnlyList<VisionEdgeEvidence>? evidence)
+    {
+        _visionEvidence =
+            evidence ??
+            Array.Empty<VisionEdgeEvidence>();
         Invalidate();
     }
 
@@ -88,6 +99,7 @@ public sealed class MapCanvas : Control
 
         DrawHazards(e.Graphics, rect);
         DrawRoadGraph(e.Graphics, rect);
+        DrawVisionEvidence(e.Graphics, rect);
         DrawMarkers(e.Graphics, rect);
         DrawRoute(e.Graphics, rect);
 
@@ -139,6 +151,77 @@ public sealed class MapCanvas : Control
                 Font,
                 new Point(center.X + (int)radiusPx + 4, center.Y - 8),
                 Color.OrangeRed);
+        }
+    }
+
+
+    private void DrawVisionEvidence(
+        Graphics g,
+        Rectangle rect)
+    {
+        if (_roadGraph == null ||
+            _visionEvidence.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var active = _visionEvidence
+            .Where(x => x.ExpiresUtc > now)
+            .GroupBy(
+                x => x.EdgeId,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(gp => gp
+                .OrderByDescending(x => x.Confidence)
+                .First())
+            .ToDictionary(
+                x => x.EdgeId,
+                StringComparer.OrdinalIgnoreCase);
+
+        if (active.Count == 0)
+            return;
+
+        var nodes = _roadGraph.Nodes.ToDictionary(
+            n => n.Id,
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var edge in _roadGraph.Edges)
+        {
+            if (!active.TryGetValue(
+                    edge.Id,
+                    out var evidence) ||
+                !nodes.TryGetValue(edge.A, out var a) ||
+                !nodes.TryGetValue(edge.B, out var b))
+                continue;
+
+            var p1 = ToPixel(rect, a.Position);
+            var p2 = ToPixel(rect, b.Position);
+
+            var color = evidence.Kind switch
+            {
+                "blocked" => Color.Red,
+                "danger" => Color.OrangeRed,
+                _ => Color.Magenta
+            };
+
+            using var shadow = new Pen(
+                Color.FromArgb(190, 0, 0, 0),
+                9);
+
+            using var pen = new Pen(
+                Color.FromArgb(
+                    120 +
+                    (int)(Math.Clamp(
+                        evidence.Confidence,
+                        0,
+                        1) * 120),
+                    color),
+                4)
+            {
+                DashStyle = DashStyle.Dash,
+                LineJoin = LineJoin.Round
+            };
+
+            g.DrawLine(shadow, p1, p2);
+            g.DrawLine(pen, p1, p2);
         }
     }
 
