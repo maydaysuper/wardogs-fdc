@@ -738,6 +738,57 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void Guidance_HighSpeedWidensRerouteTolerance()
+    {
+        var route = new RoutePlan
+        {
+            MapId = "test",
+            DistanceKm = 1.0,
+            EstimatedMinutes = 1.0,
+            Points = new List<MapPoint>
+            {
+                new(10, 10),
+                new(20, 10)
+            }
+        };
+
+        var tracker =
+            new NavigationGuidanceTracker();
+        tracker.Reset(route);
+
+        var first =
+            tracker.BuildCue(
+                new MapPoint(12, 10.82),
+                null,
+                120);
+
+        var second =
+            tracker.BuildCue(
+                new MapPoint(12.5, 10.84),
+                null,
+                120);
+
+        Assert.True(first.OffRoute);
+        Assert.False(first.ShouldReroute);
+        Assert.False(second.ShouldReroute);
+
+        var third =
+            tracker.BuildCue(
+                new MapPoint(13, 11.10),
+                null,
+                120);
+
+        var fourth =
+            tracker.BuildCue(
+                new MapPoint(13.5, 11.12),
+                null,
+                120);
+
+        Assert.False(third.ShouldReroute);
+        Assert.True(fourth.ShouldReroute);
+    }
+
+    [Fact]
     public void Guidance_TracksProgressAndDynamicEta()
     {
         var route = new RoutePlan
