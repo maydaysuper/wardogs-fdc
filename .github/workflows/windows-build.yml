@@ -1,0 +1,41 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore WardogsNavigator.csproj
+
+      - name: Build
+        run: dotnet build WardogsNavigator.csproj -c Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/WardogsNavigator.Tests/WardogsNavigator.Tests.csproj -c Release
+
+      - name: Publish self-contained x64
+        run: dotnet publish WardogsNavigator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+
+      - name: Package portable
+        shell: pwsh
+        run: Compress-Archive -Path publish\* -DestinationPath WardogsNavigator-win-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WardogsNavigator-win-x64
+          path: |
+            publish/**
+            WardogsNavigator-win-x64.zip
+          retention-days: 7
