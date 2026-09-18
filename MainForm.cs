@@ -71,6 +71,7 @@ public sealed class MainForm : Form
     private AiVisionNavigationReport? _lastVisionReport;
     private bool _aiLearningBusy;
     private bool _visionBusy;
+    private bool _liveTickBusy;
     private DateTime _lastAutoVisionScan = DateTime.MinValue;
     private CancellationTokenSource? _visionCts;
 
@@ -954,110 +955,122 @@ public sealed class MainForm : Form
 
     private async Task LiveTickAsync()
     {
+        if (_liveTickBusy)
+            return;
+
+        _liveTickBusy = true;
+
+        try
+        {
         if (!_live && !_traceLearning.IsRecording) return;
-
-        var current = await ReadRegionAsync(_settings.PlayerRegion);
-        if (current is not MapPoint now) return;
-
-        if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
-            _headingDeg = old.BearingDegTo(now);
-
-        _lastLivePoint = now;
-        SetSelf(now);
-        _navigationLearning.NotePoint(now);
-
-        if (_traceLearning.IsRecording)
-        {
-            _traceLearning.Accept(now);
-            UpdateRoadGraphStatus(
-                "实车学习中：已采样 " +
-                _traceLearning.RawPoints.Count +
-                " 个有效位置点。");
-        }
-
-        if (!_live)
-        {
-            UpdateMapState();
-            return;
-        }
-
-        if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
-        {
-            var target = await ReadRegionAsync(_settings.TargetRegion);
-            if (target is MapPoint targetPoint)
-            {
-                if (!TryPoint(_targetX, _targetY, out var oldTarget) ||
-                    oldTarget.DistanceMeters(targetPoint) > 12)
+        
+                var current = await ReadRegionAsync(_settings.PlayerRegion);
+                if (current is not MapPoint now) return;
+        
+                if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
+                    _headingDeg = old.BearingDegTo(now);
+        
+                _lastLivePoint = now;
+                SetSelf(now);
+                _navigationLearning.NotePoint(now);
+        
+                if (_traceLearning.IsRecording)
                 {
-                    SetTarget(targetPoint);
-                    await PlanRouteAsync(false);
+                    _traceLearning.Accept(now);
+                    UpdateRoadGraphStatus(
+                        "实车学习中：已采样 " +
+                        _traceLearning.RawPoints.Count +
+                        " 个有效位置点。");
                 }
-            }
-        }
-
-        if (_route == null)
-        {
-            await PlanRouteAsync(false);
-            return;
-        }
-
-        if (RoutePlanner.DistanceToRouteMeters(_route, now) > 150)
-        {
-            await PlanRouteAsync(false);
-            return;
-        }
-
-        var cue = RoutePlanner.BuildCue(_route, now, _headingDeg);
-        _overlay.UpdateCue(cue, _route);
-        UpdateMapState();
-
-        if (_settings.SpeakNavigation &&
-            !cue.Arrived &&
-            (cue.RouteIndex != _lastCueIndex ||
-             DateTime.UtcNow - _lastSpoken > TimeSpan.FromSeconds(20)))
-        {
-            _lastCueIndex = cue.RouteIndex;
-            _lastSpoken = DateTime.UtcNow;
-            Speak(cue.Instruction);
-        }
-        else if (cue.Arrived && cue.RouteIndex != _lastCueIndex)
-        {
-            _lastCueIndex = cue.RouteIndex;
-            Speak("已到达目的地");
-        }
-
-        if (cue.Arrived && _navigationLearning.IsActive)
-        {
-            StoreNavigationExperience(completed: true);
-
-            if (_settings.AiAutoApplyNavigationLearning &&
-                !string.IsNullOrWhiteSpace(_apiKey.Text))
-            {
-                var snapshot = _experiences.Snapshot(_map.Text);
-                if (snapshot.CompletedCount >= 3 &&
-                    snapshot.CompletedCount % 3 == 0)
+        
+                if (!_live)
                 {
-                    await AnalyzeNavigationLearningAsync(
+                    UpdateMapState();
+                    return;
+                }
+        
+                if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
+                {
+                    var target = await ReadRegionAsync(_settings.TargetRegion);
+                    if (target is MapPoint targetPoint)
+                    {
+                        if (!TryPoint(_targetX, _targetY, out var oldTarget) ||
+                            oldTarget.DistanceMeters(targetPoint) > 12)
+                        {
+                            SetTarget(targetPoint);
+                            await PlanRouteAsync(false);
+                        }
+                    }
+                }
+        
+                if (_route == null)
+                {
+                    await PlanRouteAsync(false);
+                    return;
+                }
+        
+                if (RoutePlanner.DistanceToRouteMeters(_route, now) > 150)
+                {
+                    await PlanRouteAsync(false);
+                    return;
+                }
+        
+                var cue = RoutePlanner.BuildCue(_route, now, _headingDeg);
+                _overlay.UpdateCue(cue, _route);
+                UpdateMapState();
+        
+                if (_settings.SpeakNavigation &&
+                    !cue.Arrived &&
+                    (cue.RouteIndex != _lastCueIndex ||
+                     DateTime.UtcNow - _lastSpoken > TimeSpan.FromSeconds(20)))
+                {
+                    _lastCueIndex = cue.RouteIndex;
+                    _lastSpoken = DateTime.UtcNow;
+                    Speak(cue.Instruction);
+                }
+                else if (cue.Arrived && cue.RouteIndex != _lastCueIndex)
+                {
+                    _lastCueIndex = cue.RouteIndex;
+                    Speak("已到达目的地");
+                }
+        
+                if (cue.Arrived && _navigationLearning.IsActive)
+                {
+                    StoreNavigationExperience(completed: true);
+        
+                    if (_settings.AiAutoApplyNavigationLearning &&
+                        !string.IsNullOrWhiteSpace(_apiKey.Text))
+                    {
+                        var snapshot = _experiences.Snapshot(_map.Text);
+                        if (snapshot.CompletedCount >= 3 &&
+                            snapshot.CompletedCount % 3 == 0)
+                        {
+                            await AnalyzeNavigationLearningAsync(
+                                autoApply: true,
+                                silent: true);
+                        }
+                    }
+                }
+        
+                if (!cue.Arrived &&
+                    _settings.AiAutoVisionScan &&
+                    _settings.VisionMapRegion.IsValid &&
+                    !string.IsNullOrWhiteSpace(_apiKey.Text) &&
+                    _route?.EdgeIds.Count > 0 &&
+                    !_visionBusy &&
+                    DateTime.UtcNow - _lastAutoVisionScan >
+                        TimeSpan.FromMinutes(3))
+                {
+                    _lastAutoVisionScan = DateTime.UtcNow;
+        
+                    await AnalyzeVisionRouteAsync(
                         autoApply: true,
                         silent: true);
                 }
-            }
         }
-
-        if (!cue.Arrived &&
-            _settings.AiAutoVisionScan &&
-            _settings.VisionMapRegion.IsValid &&
-            !string.IsNullOrWhiteSpace(_apiKey.Text) &&
-            _route?.EdgeIds.Count > 0 &&
-            !_visionBusy &&
-            DateTime.UtcNow - _lastAutoVisionScan >
-                TimeSpan.FromMinutes(3))
+        finally
         {
-            _lastAutoVisionScan = DateTime.UtcNow;
-
-            await AnalyzeVisionRouteAsync(
-                autoApply: true,
-                silent: true);
+            _liveTickBusy = false;
         }
     }
 
