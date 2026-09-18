@@ -147,8 +147,11 @@ public sealed class NavigationMapMemoryStore
                             true
                     });
 
-            return parsed ??
-                   NewDictionary();
+            return parsed == null
+                ? NewDictionary()
+                : new Dictionary<string, MapVisualMemory>(
+                    parsed,
+                    StringComparer.OrdinalIgnoreCase);
         }
         catch
         {
