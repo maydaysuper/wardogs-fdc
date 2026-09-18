@@ -32,10 +32,17 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path publish\* -DestinationPath WardogsNavigator-win-x64.zip -Force
 
+      - name: SHA-256 portable package
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash WardogsNavigator-win-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  WardogsNavigator-win-x64.zip" | Tee-Object -FilePath WardogsNavigator-win-x64.sha256
+
       - uses: actions/upload-artifact@v4
         with:
           name: WardogsNavigator-win-x64
           path: |
             publish/**
             WardogsNavigator-win-x64.zip
+            WardogsNavigator-win-x64.sha256
           retention-days: 7
