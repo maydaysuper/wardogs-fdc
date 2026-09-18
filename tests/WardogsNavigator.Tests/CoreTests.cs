@@ -510,6 +510,144 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void VisionEvidence_AppliesOnlyActionableHighConfidenceFindings()
+    {
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store = new NavigationVisionEvidenceStore(temp);
+
+            var report = new AiVisionNavigationReport
+            {
+                Summary = "test",
+                Findings = new List<AiVisionFinding>
+                {
+                    new()
+                    {
+                        EdgeId = "e1",
+                        Kind = "blocked",
+                        Severity = 0.90,
+                        Confidence = 0.90,
+                        Reason = "clear obstruction"
+                    },
+                    new()
+                    {
+                        EdgeId = "e2",
+                        Kind = "uncertain",
+                        Severity = 1.00,
+                        Confidence = 0.99,
+                        Reason = "cannot align"
+                    },
+                    new()
+                    {
+                        EdgeId = "e3",
+                        Kind = "danger",
+                        Severity = 0.80,
+                        Confidence = 0.60,
+                        Reason = "weak evidence"
+                    },
+                    new()
+                    {
+                        EdgeId = "not-real",
+                        Kind = "blocked",
+                        Severity = 1.00,
+                        Confidence = 1.00,
+                        Reason = "invalid id"
+                    }
+                }
+            };
+
+            var valid = new HashSet<string>(
+                new[] { "e1", "e2", "e3" },
+                StringComparer.OrdinalIgnoreCase);
+
+            var applied = store.ApplyReport(
+                "test",
+                report,
+                valid,
+                0.80,
+                TimeSpan.FromMinutes(5));
+
+            Assert.Equal(1, applied);
+
+            var active = store.GetActive("test");
+            var evidence = Assert.Single(active);
+            Assert.Equal("e1", evidence.EdgeId);
+            Assert.Equal("blocked", evidence.Kind);
+
+            var risk = store.GetRiskMap("test");
+            Assert.True(risk["e1"] > 0.80);
+
+            Assert.Equal(
+                1,
+                store.ClearEdges(
+                    "test",
+                    new[] { "e1" }));
+
+            Assert.Empty(store.GetActive("test"));
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void SafeRoute_AvoidsHighConfidenceVisualRisk()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
+                new() { Id = "s", Position = new MapPoint(10, 10) },
+                new() { Id = "north", Position = new MapPoint(12, 12) },
+                new() { Id = "south", Position = new MapPoint(12, 8) },
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "sn", A = "s", B = "north", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "ne", A = "north", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "ss", A = "s", B = "south", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "se", A = "south", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
+            }
+        };
+
+        var vision = new Dictionary<string, double>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            ["sn"] = 0.95,
+            ["ne"] = 0.95
+        };
+
+        var route = new RoadGraphRouter().TryPlan(
+            graph,
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
+            RoutePreference.Safe,
+            VehicleRoutingProfileService.Generic(),
+            Array.Empty<NavigationHazard>(),
+            vision);
+
+        Assert.NotNull(route);
+        Assert.Contains("ss", route!.EdgeIds);
+        Assert.Contains("se", route.EdgeIds);
+        Assert.DoesNotContain("sn", route.EdgeIds);
+        Assert.DoesNotContain("ne", route.EdgeIds);
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]
