@@ -306,7 +306,10 @@ public sealed class RoadGraphRouter
             (edge.Traversals > 0 ? 0.0 : 0.18) +
             autoPenalty;
 
-        var staticRisk = Math.Clamp(edge.Risk, 0, 1);
+        var staticRisk = Math.Clamp(
+            edge.Risk + edge.AiRiskAdjustment,
+            0,
+            1);
         var effectiveRisk = Math.Clamp(
             staticRisk + hazardPenalty * (1.15 - vehicleProfile.RiskTolerance * 0.55),
             0,
