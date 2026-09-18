@@ -1015,13 +1015,255 @@ public sealed class MainForm : Form
 
     private async Task ReadTargetOnceAsync()
     {
-        var point = await ReadRegionAsync(_settings.TargetRegion);
-        if (point is not MapPoint value) return;
+        var point =
+            await ReadBestTargetAsync(
+                silent: false);
+
+        if (point is not MapPoint value)
+            return;
 
         _pendingTargetPoint = null;
         _pendingTargetSamples = 0;
         SetTarget(value);
         await PlanRouteAsync(false);
+    }
+
+    private async Task<MapPoint?> ReadBestTargetAsync(
+        bool silent)
+    {
+        string visualError = "";
+
+        if (_settings.VisualTargetNavigationEnabled &&
+            _settings.VisionMapRegion.IsValid &&
+            _settings.TargetMarkerProfile?.IsValid == true)
+        {
+            var visual =
+                await ReadVisualTargetAsync(
+                    silent: true);
+
+            if (visual.Success &&
+                visual.Confidence >=
+                    _settings.VisualTargetMinConfidence)
+                return visual.Point;
+
+            visualError =
+                visual.Error;
+        }
+
+        if (_settings.TargetRegion.IsValid)
+        {
+            var ocr =
+                await ReadRegionAsync(
+                    _settings.TargetRegion,
+                    silent: true);
+
+            if (ocr is MapPoint point)
+                return point;
+        }
+
+        if (!silent)
+        {
+            _routeSummary.Text =
+                string.IsNullOrWhiteSpace(
+                    visualError)
+                    ? "目标识别失败：视觉目标和坐标 OCR 都没有获得有效目标。"
+                    : "目标识别失败：" +
+                      visualError +
+                      "；坐标 OCR 也未获得有效目标。";
+        }
+
+        return null;
+    }
+
+    private async Task<VisualTargetDetection> ReadVisualTargetAsync(
+        bool silent,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            return new VisualTargetDetection
+            {
+                Error =
+                    "尚未框选游戏地图视觉区域。"
+            };
+        }
+
+        if (_settings.TargetMarkerProfile?.IsValid != true)
+        {
+            return new VisualTargetDetection
+            {
+                Error =
+                    "尚未校准目标标记图标。"
+            };
+        }
+
+        try
+        {
+            using var screenshot =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            var mapId =
+                _map.Text;
+
+            var memory =
+                _visualMapMemory.Get(
+                    mapId);
+
+            var hint =
+                _lastMapRegistration?.IsValid == true
+                    ? _lastMapRegistration
+                    : memory.LastRegistration;
+
+            var registration =
+                await _mapVisualRegistration.RegisterAsync(
+                    mapId,
+                    screenshot,
+                    hint,
+                    cancellationToken);
+
+            if (registration?.IsValid != true ||
+                registration.Confidence <
+                    _settings.VisualMapMinRegistrationConfidence)
+            {
+                _visualMapMemory.RecordRegistrationFailure(
+                    mapId);
+
+                var error =
+                    registration == null
+                        ? "本地地图配准失败。"
+                        : "地图配准置信度不足：" +
+                          Math.Round(
+                              registration.Confidence *
+                              100)
+                              .ToString("F0") +
+                          "%";
+
+                if (!silent)
+                    _routeSummary.Text =
+                        error;
+
+                return new VisualTargetDetection
+                {
+                    Error = error,
+                    RegistrationConfidence =
+                        registration?.Confidence ?? 0
+                };
+            }
+
+            _lastMapRegistration =
+                registration;
+
+            _visualMapMemory.RecordRegistration(
+                mapId,
+                registration);
+
+            MapPoint? expected =
+                TryPoint(
+                    _targetX,
+                    _targetY,
+                    out var currentTarget)
+                    ? currentTarget
+                    : memory.LastVisualTarget;
+
+            var detection =
+                await Task.Run(
+                    () =>
+                        _targetMarkerDetector.Detect(
+                            screenshot,
+                            registration,
+                            _settings.TargetMarkerProfile,
+                            expected),
+                    cancellationToken);
+
+            if (detection.Success &&
+                detection.Confidence >=
+                    _settings.VisualTargetMinConfidence)
+            {
+                _lastVisualTargetDetection =
+                    detection;
+
+                _visualMapMemory.RecordTarget(
+                    mapId,
+                    detection.Point,
+                    detection.Confidence);
+
+                _mapCanvas.SetVisualMapState(
+                    registration,
+                    detection.Point,
+                    detection.Confidence);
+
+                if (!silent)
+                {
+                    _routeSummary.Text =
+                        "视觉目标：" +
+                        detection.Point +
+                        " · 目标置信 " +
+                        Math.Round(
+                            detection.Confidence *
+                            100)
+                            .ToString("F0") +
+                        "% · 配准 " +
+                        Math.Round(
+                            registration.Confidence *
+                            100)
+                            .ToString("F0") +
+                        "%";
+                }
+
+                return detection;
+            }
+
+            detection.Success = false;
+
+            if (string.IsNullOrWhiteSpace(
+                    detection.Error))
+            {
+                detection.Error =
+                    "目标图标候选置信度不足：" +
+                    Math.Round(
+                        detection.Confidence *
+                        100)
+                        .ToString("F0") +
+                    "%";
+            }
+
+            _mapCanvas.SetVisualMapState(
+                registration,
+                null,
+                0);
+
+            if (!silent)
+                _routeSummary.Text =
+                    detection.Error;
+
+            return detection;
+        }
+        catch (OperationCanceledException)
+        {
+            return new VisualTargetDetection
+            {
+                Error =
+                    "视觉目标识别已取消。"
+            };
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+            {
+                _routeSummary.Text =
+                    "视觉目标识别失败：" +
+                    ex.Message;
+            }
+
+            return new VisualTargetDetection
+            {
+                Error =
+                    "视觉目标识别失败：" +
+                    ex.Message
+            };
+        }
     }
 
     private async Task<MapPoint?> ReadRegionAsync(
@@ -1155,17 +1397,34 @@ public sealed class MainForm : Form
                     return;
                 }
         
+                var targetReadAvailable =
+                    (
+                        _settings.VisualTargetNavigationEnabled &&
+                        _settings.VisionMapRegion.IsValid &&
+                        _settings.TargetMarkerProfile?.IsValid == true
+                    ) ||
+                    _settings.TargetRegion.IsValid;
+
+                var targetScanSeconds =
+                    _settings.VisualTargetNavigationEnabled
+                        ? Math.Clamp(
+                            _settings.VisualTargetScanSeconds,
+                            2,
+                            15)
+                        : 4;
+
                 if (_settings.AutoReadTarget &&
-                    _settings.TargetRegion.IsValid &&
+                    targetReadAvailable &&
                     DateTime.UtcNow - _lastTargetOcrUtc >=
-                        TimeSpan.FromSeconds(4))
+                        TimeSpan.FromSeconds(
+                            targetScanSeconds))
                 {
                     _lastTargetOcrUtc =
                         DateTime.UtcNow;
 
-                    var target = await ReadRegionAsync(
-                        _settings.TargetRegion,
-                        silent: true);
+                    var target =
+                        await ReadBestTargetAsync(
+                            silent: true);
 
                     if (target is MapPoint targetPoint)
                     {
@@ -1185,13 +1444,15 @@ public sealed class MainForm : Form
                         else
                         {
                             if (_pendingTargetPoint is MapPoint pending &&
-                                pending.DistanceMeters(targetPoint) <= 20)
+                                pending.DistanceMeters(
+                                    targetPoint) <= 20)
                             {
                                 _pendingTargetSamples++;
                             }
                             else
                             {
-                                _pendingTargetPoint = targetPoint;
+                                _pendingTargetPoint =
+                                    targetPoint;
                                 _pendingTargetSamples = 1;
                             }
 
