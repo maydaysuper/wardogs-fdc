@@ -42,6 +42,76 @@ public sealed partial class CoordinateRecognizer : IDisposable
         }
     }
 
+    public async Task<double?> RecognizeSpeedAsync(
+        Bitmap bitmap,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await EnsureEngineAsync(cancellationToken);
+            using var pix = PixConverter.ToPix(bitmap);
+            using var page =
+                _engine!.Process(
+                    pix,
+                    PageSegMode.SingleLine);
+
+            return TryParseSpeedText(
+                page.GetText() ?? "",
+                out var speedKmh)
+                    ? speedKmh
+                    : null;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public static bool TryParseSpeedText(
+        string text,
+        out double speedKmh)
+    {
+        speedKmh = 0;
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var values =
+            Regex.Matches(
+                    text,
+                    @"\d{1,3}(?:[\.,]\d+)?")
+                .Cast<Match>()
+                .Select(x =>
+                    x.Value.Replace(',', '.'))
+                .Select(x =>
+                    double.TryParse(
+                        x,
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out var n)
+                            ? (double?)n
+                            : null)
+                .Where(x =>
+                    x.HasValue &&
+                    x.Value >= 0 &&
+                    x.Value <= 260)
+                .Select(x => x!.Value)
+                .ToList();
+
+        if (values.Count == 0)
+            return false;
+
+        // The region is expected to contain only the speedometer. Prefer the
+        // largest plausible number to tolerate small gear/RPM digits.
+        speedKmh = values.Max();
+        return true;
+    }
+
     public static bool TryParseText(string text, out MapPoint point)
     {
         point = default;
