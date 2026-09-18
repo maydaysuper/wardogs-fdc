@@ -880,6 +880,14 @@ public sealed class CoreTests
     [Fact]
     public void LearnedSlowRoadCanChangeFastestRoute()
     {
+        var learned = new LocalSpeedLearningState
+        {
+            ObservationCount = 6,
+            EffectiveWeight = 12,
+            MeanMultiplier = 0.55,
+            Confidence = 0.95
+        };
+
         var graph = new RoadGraph
         {
             MapId = "test",
@@ -912,21 +920,10 @@ public sealed class CoreTests
                         {
                             ["ural"] = new()
                             {
-                                ObservationCount = 6,
-                                EffectiveWeight = 12,
-                                MeanMultiplier = 0.55,
-                                Confidence = 0.95
-                            }
-                        },
-                    LocalVehicleSpeedLearning =
-                        new Dictionary<string, LocalSpeedLearningState>
-                        {
-                            ["ural"] = new()
-                            {
-                                ObservationCount = 6,
-                                EffectiveWeight = 12,
-                                MeanMultiplier = 0.55,
-                                Confidence = 0.95
+                                ObservationCount = learned.ObservationCount,
+                                EffectiveWeight = learned.EffectiveWeight,
+                                MeanMultiplier = learned.MeanMultiplier,
+                                Confidence = learned.Confidence
                             }
                         }
                 },
@@ -941,6 +938,17 @@ public sealed class CoreTests
                         new Dictionary<string, double>
                         {
                             ["ural"] = 0.55
+                        },
+                    LocalVehicleSpeedLearning =
+                        new Dictionary<string, LocalSpeedLearningState>
+                        {
+                            ["ural"] = new()
+                            {
+                                ObservationCount = learned.ObservationCount,
+                                EffectiveWeight = learned.EffectiveWeight,
+                                MeanMultiplier = learned.MeanMultiplier,
+                                Confidence = learned.Confidence
+                            }
                         }
                 },
                 new() { Id = "long-a", A = "s", B = "long", Class = RoadClass.Primary, Verified = true },
