@@ -15,6 +15,9 @@ public sealed class MapCanvas : Control
     private IReadOnlyList<NavigationHazard> _hazards = Array.Empty<NavigationHazard>();
     private IReadOnlyList<VisionEdgeEvidence> _visionEvidence =
         Array.Empty<VisionEdgeEvidence>();
+    private MapViewportRegistration? _visualViewport;
+    private MapPoint? _visualTarget;
+    private double _visualTargetConfidence;
 
     public event Action<MapPoint>? MapClicked;
 
@@ -67,6 +70,21 @@ public sealed class MapCanvas : Control
         Invalidate();
     }
 
+    public void SetVisualMapState(
+        MapViewportRegistration? viewport,
+        MapPoint? target,
+        double targetConfidence = 0)
+    {
+        _visualViewport = viewport;
+        _visualTarget = target;
+        _visualTargetConfidence =
+            Math.Clamp(
+                targetConfidence,
+                0,
+                1);
+        Invalidate();
+    }
+
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
@@ -107,6 +125,7 @@ public sealed class MapCanvas : Control
         DrawHazards(e.Graphics, rect);
         DrawRoadGraph(e.Graphics, rect);
         DrawVisionEvidence(e.Graphics, rect);
+        DrawVisualViewport(e.Graphics, rect);
         DrawMarkers(e.Graphics, rect);
         DrawRoute(e.Graphics, rect);
 
@@ -117,6 +136,164 @@ public sealed class MapCanvas : Control
     }
 
 
+
+
+    private void DrawVisualViewport(
+        Graphics g,
+        Rectangle rect)
+    {
+        if (_visualViewport?.IsValid != true)
+            return;
+
+        var registration =
+            _visualViewport;
+
+        var leftWorld =
+            registration.Left01 *
+            MapPoint.MapSize;
+
+        var rightWorld =
+            (
+                registration.Left01 +
+                registration.Width01
+            ) *
+            MapPoint.MapSize;
+
+        var topWorld =
+            (
+                1.0 -
+                registration.Top01
+            ) *
+            MapPoint.MapSize;
+
+        var bottomWorld =
+            (
+                1.0 -
+                registration.Top01 -
+                registration.Height01
+            ) *
+            MapPoint.MapSize;
+
+        var topLeft =
+            ToPixel(
+                rect,
+                new MapPoint(
+                    leftWorld,
+                    topWorld));
+
+        var bottomRight =
+            ToPixel(
+                rect,
+                new MapPoint(
+                    rightWorld,
+                    bottomWorld));
+
+        var box =
+            Rectangle.FromLTRB(
+                Math.Min(
+                    topLeft.X,
+                    bottomRight.X),
+                Math.Min(
+                    topLeft.Y,
+                    bottomRight.Y),
+                Math.Max(
+                    topLeft.X,
+                    bottomRight.X),
+                Math.Max(
+                    topLeft.Y,
+                    bottomRight.Y));
+
+        using var fill =
+            new SolidBrush(
+                Color.FromArgb(
+                    18,
+                    80,
+                    220,
+                    255));
+
+        using var pen =
+            new Pen(
+                Color.FromArgb(
+                    205,
+                    80,
+                    220,
+                    255),
+                2)
+            {
+                DashStyle =
+                    DashStyle.Dash
+            };
+
+        g.FillRectangle(
+            fill,
+            box);
+
+        g.DrawRectangle(
+            pen,
+            box);
+
+        TextRenderer.DrawText(
+            g,
+            "VIS " +
+            Math.Round(
+                registration.Confidence *
+                100)
+                .ToString("F0") +
+            "%",
+            Font,
+            new Point(
+                box.Left + 4,
+                box.Top + 4),
+            Color.Cyan);
+
+        if (_visualTarget is MapPoint target)
+        {
+            var p =
+                ToPixel(
+                    rect,
+                    target);
+
+            using var targetPen =
+                new Pen(
+                    Color.Magenta,
+                    2);
+
+            g.DrawEllipse(
+                targetPen,
+                p.X - 10,
+                p.Y - 10,
+                20,
+                20);
+
+            g.DrawLine(
+                targetPen,
+                p.X - 14,
+                p.Y,
+                p.X + 14,
+                p.Y);
+
+            g.DrawLine(
+                targetPen,
+                p.X,
+                p.Y - 14,
+                p.X,
+                p.Y + 14);
+
+            TextRenderer.DrawText(
+                g,
+                "视觉目标 " +
+                Math.Round(
+                    _visualTargetConfidence *
+                    100)
+                    .ToString("F0") +
+                "%",
+                Font,
+                new Point(
+                    p.X + 14,
+                    p.Y - 10),
+                Color.Magenta);
+        }
+    }
 
     private void DrawHazards(Graphics g, Rectangle rect)
     {
