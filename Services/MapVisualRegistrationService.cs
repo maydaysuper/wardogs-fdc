@@ -34,50 +34,87 @@ public sealed class MapVisualRegistrationService
             if (baseFeature == null)
                 return null;
 
-            var screenFeature =
-                FeatureImage.FromBitmap(
-                    screenshot,
-                    144);
-
-            Candidate best =
-                default;
-
-            if (hint?.IsValid == true)
-            {
-                best = SearchNearHint(
-                    screenFeature,
+            return await Task.Run(
+                () => RegisterFeatures(
+                    mapId,
                     baseFeature,
+                    screenshot,
                     hint,
-                    cancellationToken);
-
-                if (best.Score >= 0.38)
-                    return ToRegistration(
-                        mapId,
-                        best);
-            }
-
-            best = SearchGlobal(
-                screenFeature,
-                baseFeature,
+                    cancellationToken),
                 cancellationToken);
-
-            if (best.Score <= -0.90)
-                return null;
-
-            best = Refine(
-                screenFeature,
-                baseFeature,
-                best,
-                cancellationToken);
-
-            return ToRegistration(
-                mapId,
-                best);
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    public MapViewportRegistration? RegisterLocal(
+        string mapId,
+        Bitmap baseMap,
+        Bitmap screenshot,
+        MapViewportRegistration? hint = null,
+        CancellationToken cancellationToken = default)
+    {
+        var baseFeature =
+            FeatureImage.FromBitmap(
+                baseMap,
+                192);
+
+        return RegisterFeatures(
+            mapId,
+            baseFeature,
+            screenshot,
+            hint,
+            cancellationToken);
+    }
+
+    private static MapViewportRegistration? RegisterFeatures(
+        string mapId,
+        FeatureImage baseFeature,
+        Bitmap screenshot,
+        MapViewportRegistration? hint,
+        CancellationToken cancellationToken)
+    {
+        var screenFeature =
+            FeatureImage.FromBitmap(
+                screenshot,
+                144);
+
+        Candidate best =
+            default;
+
+        if (hint?.IsValid == true)
+        {
+            best = SearchNearHint(
+                screenFeature,
+                baseFeature,
+                hint,
+                cancellationToken);
+
+            if (best.Score >= 0.38)
+                return ToRegistration(
+                    mapId,
+                    best);
+        }
+
+        best = SearchGlobal(
+            screenFeature,
+            baseFeature,
+            cancellationToken);
+
+        if (best.Score <= -0.90)
+            return null;
+
+        best = Refine(
+            screenFeature,
+            baseFeature,
+            best,
+            cancellationToken);
+
+        return ToRegistration(
+            mapId,
+            best);
     }
 
     private async Task<FeatureImage?> GetBaseFeatureAsync(
