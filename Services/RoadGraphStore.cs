@@ -174,6 +174,49 @@ public sealed class RoadGraphStore
         graph.UpdatedUtc = DateTime.UtcNow;
     }
 
+
+    public int RecordNavigationExperience(
+        RoadGraph graph,
+        NavigationExperience experience)
+    {
+        var changed = 0;
+
+        foreach (var observation in experience.EdgeObservations)
+        {
+            if (observation.Samples < 2 ||
+                observation.DistanceKm < 0.015 ||
+                observation.MaxDeviationMeters > 140)
+                continue;
+
+            var edge = graph.Edges.FirstOrDefault(e =>
+                e.Id.Equals(
+                    observation.EdgeId,
+                    StringComparison.OrdinalIgnoreCase));
+
+            if (edge == null)
+                continue;
+
+            edge.Traversals++;
+            changed++;
+
+            // Strong real-driving evidence can promote an automatic guess.
+            if (edge.Source.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
+                observation.Samples >= 3 &&
+                observation.DistanceKm >= 0.03 &&
+                observation.MaxDeviationMeters <= 90)
+            {
+                edge.Source = "trace";
+                edge.Verified = true;
+                edge.AutoScore = 0;
+            }
+        }
+
+        if (changed > 0)
+            graph.UpdatedUtc = DateTime.UtcNow;
+
+        return changed;
+    }
+
     public int ApplyAiSuggestions(
         RoadGraph graph,
         IEnumerable<AiRoadSuggestion> suggestions,
