@@ -19,6 +19,11 @@ public sealed class AppSettings
     public string DeepSeekModel { get; set; } = "deepseek-flash";
     public bool SpeakNavigation { get; set; } = true;
     public bool AutoReadTarget { get; set; } = true;
+    public bool VisualTargetNavigationEnabled { get; set; }
+    public double VisualMapMinRegistrationConfidence { get; set; } = 0.42;
+    public double VisualTargetMinConfidence { get; set; } = 0.54;
+    public int VisualTargetScanSeconds { get; set; } = 3;
+    public TargetMarkerProfile TargetMarkerProfile { get; set; } = new();
     public bool AiAutoApplyNavigationLearning { get; set; }
     public double AiLearningMinConfidence { get; set; } = 0.82;
     public bool AiAutoVisionScan { get; set; }
