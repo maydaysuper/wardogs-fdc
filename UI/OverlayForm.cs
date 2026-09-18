@@ -5,6 +5,9 @@ namespace WardogsNavigator.UI;
 
 public sealed class OverlayForm : Form
 {
+    private const int WsExTransparent = 0x00000020;
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExNoActivate = 0x08000000;
     private readonly Label _icon = new();
     private readonly Label _main = new();
     private readonly Label _sub = new();
@@ -21,6 +24,7 @@ public sealed class OverlayForm : Form
         Width = 520;
         Height = 168;
         Padding = new Padding(12);
+        DoubleBuffered = true;
 
         _icon.Location = new Point(14, 15);
         _icon.Size = new Size(72, 70);
@@ -79,6 +83,22 @@ public sealed class OverlayForm : Form
         Location = new Point(
             wa.Right - Width - 24,
             wa.Top + 40);
+    }
+
+    protected override bool ShowWithoutActivation =>
+        true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |=
+                WsExTransparent |
+                WsExToolWindow |
+                WsExNoActivate;
+            return cp;
+        }
     }
 
     public void UpdateCue(
