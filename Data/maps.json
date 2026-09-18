@@ -1,0 +1,38 @@
+{
+  "bakurani": {
+    "id": "bakurani",
+    "markers": [
+      { "kind": "tower", "label": "T1", "position": { "x": 80.52, "y": 69.85 } },
+      { "kind": "tower", "label": "T2", "position": { "x": 77.19, "y": 70.00 } },
+      { "kind": "tower", "label": "T3", "position": { "x": 77.19, "y": 73.44 } },
+      { "kind": "tower", "label": "T4", "position": { "x": 83.64, "y": 72.85 } },
+      { "kind": "tower", "label": "T5", "position": { "x": 82.22, "y": 68.41 } },
+      { "kind": "valkyra", "label": "VALKYRA", "position": { "x": 118.75, "y": 70.93 } },
+      { "kind": "manticore", "label": "MANTICORE", "position": { "x": 40.09, "y": 77.52 } },
+      { "kind": "lonestar", "label": "LONESTAR", "position": { "x": 87.46, "y": 32.50 } }
+    ]
+  },
+  "ozeti": {
+    "id": "ozeti",
+    "markers": [
+      { "kind": "tower", "label": "T1", "position": { "x": 95.80, "y": 62.82 } },
+      { "kind": "tower", "label": "T2", "position": { "x": 100.37, "y": 59.23 } },
+      { "kind": "tower", "label": "T3", "position": { "x": 104.49, "y": 63.71 } },
+      { "kind": "tower", "label": "T4", "position": { "x": 100.62, "y": 67.64 } },
+      { "kind": "valkyra", "label": "VALKYRA", "position": { "x": 138.03, "y": 67.33 } },
+      { "kind": "manticore", "label": "MANTICORE", "position": { "x": 68.28, "y": 88.03 } },
+      { "kind": "lonestar", "label": "LONESTAR", "position": { "x": 83.73, "y": 30.69 } }
+    ]
+  },
+  "zestafona": {
+    "id": "zestafona",
+    "markers": [
+      { "kind": "tower", "label": "T1", "position": { "x": 68.60, "y": 104.15 } },
+      { "kind": "tower", "label": "T2", "position": { "x": 72.89, "y": 105.07 } },
+      { "kind": "tower", "label": "T3", "position": { "x": 70.17, "y": 100.17 } },
+      { "kind": "valkyra", "label": "VALKYRA", "position": { "x": 39.4363, "y": 124.9444 } },
+      { "kind": "manticore", "label": "MANTICORE", "position": { "x": 104.661, "y": 115.0812 } },
+      { "kind": "lonestar", "label": "LONESTAR", "position": { "x": 68.01, "y": 66.601 } }
+    ]
+  }
+}
