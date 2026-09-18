@@ -1330,7 +1330,10 @@ public sealed class MainForm : Form
                             registration.Confidence *
                             100)
                             .ToString("F0") +
-                        "%";
+                        "% · 旋转 " +
+                        registration.RotationDeg
+                            .ToString("+0;-0;0") +
+                        "°";
                 }
 
                 return detection;
@@ -2278,30 +2281,27 @@ public sealed class MainForm : Form
 
             UpdateCalibrationStatus();
 
-            var left =
-                registration.Left01 *
-                MapPoint.MapSize;
-
-            var right =
+            var centerX =
                 (
                     registration.Left01 +
-                    registration.Width01
+                    registration.Width01 * 0.5
                 ) *
                 MapPoint.MapSize;
 
-            var top =
-                (
-                    1 -
-                    registration.Top01
-                ) *
-                MapPoint.MapSize;
-
-            var bottom =
+            var centerY =
                 (
                     1 -
                     registration.Top01 -
-                    registration.Height01
+                    registration.Height01 * 0.5
                 ) *
+                MapPoint.MapSize;
+
+            var widthUnits =
+                registration.Width01 *
+                MapPoint.MapSize;
+
+            var heightUnits =
+                registration.Height01 *
                 MapPoint.MapSize;
 
             var message =
@@ -2320,14 +2320,14 @@ public sealed class MainForm : Form
                 registration.RotationDeg
                     .ToString("+0;-0;0") +
                 "°\r\n" +
-                "视口 X " +
-                left.ToString("F1") +
-                "–" +
-                right.ToString("F1") +
-                " · Y " +
-                bottom.ToString("F1") +
-                "–" +
-                top.ToString("F1");
+                "视口中心 X " +
+                centerX.ToString("F1") +
+                " / Y " +
+                centerY.ToString("F1") +
+                " · 宽 " +
+                widthUnits.ToString("F1") +
+                " / 高 " +
+                heightUnits.ToString("F1");
 
             _routeSummary.Text =
                 message;
