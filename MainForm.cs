@@ -66,6 +66,11 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 1500 };
     private readonly NavigationPositionFilter _positionFilter = new();
+    private readonly VisualMotionEstimator _visualMotion = new();
+    private readonly VisualDrivingTracker _visualTracker = new();
+    private readonly IRoadSceneAnalyzer _roadScene = new LocalRoadSceneAnalyzer();
+    private readonly CheckBox _visualDriveCheck = new();
+    private readonly Label _visualDriveStatus = new();
 
     private RoutePlan? _route;
     private EconomicPlan? _selectedEconomicPlan;
@@ -97,6 +102,9 @@ public sealed class MainForm : Form
     private VisualTargetDetection? _lastVisualTargetDetection;
     private CancellationTokenSource? _visionCts;
     private CancellationTokenSource? _targetScanCts;
+    private DateTime _lastHudSpeedOcrUtc = DateTime.MinValue;
+    private DateTime _lastHudSpeedSuccessUtc = DateTime.MinValue;
+    private double? _lastHudSpeedKmh;
 
     public MainForm()
     {
@@ -112,7 +120,7 @@ public sealed class MainForm : Form
             new MapVisualRegistrationService(
                 _mapAssets);
 
-        Text = "WARDOGS Tactical Navigator · 0.10.0";
+        Text = "WARDOGS Tactical Navigator · 0.11.0";
         Width = 1460;
         Height = 860;
         MinimumSize = new Size(1100, 680);
@@ -291,6 +299,43 @@ public sealed class MainForm : Form
         };
         p.Controls.Add(_visualTargetCheck);
 
+        _visualDriveCheck.Text =
+            "纯视觉连续定位（起点后不持续 OCR）";
+        _visualDriveCheck.AutoSize = true;
+        _visualDriveCheck.ForeColor =
+            Color.FromArgb(130, 220, 255);
+        _visualDriveCheck.CheckedChanged += (_, _) =>
+        {
+            _settings.VisualContinuousLocalizationEnabled =
+                _visualDriveCheck.Checked;
+
+            if (_visualDriveCheck.Checked)
+            {
+                // v0.11 defaults to a two-snapshot workflow. The destination
+                // remains locked unless the user explicitly re-enables
+                // automatic target following afterwards.
+                _autoTargetCheck.Checked = false;
+                _settings.AutoReadTarget = false;
+            }
+            else
+            {
+                _visualTracker.Reset();
+                _visualMotion.Reset();
+            }
+
+            _settings.Save();
+            UpdateVisualDriveStatus();
+        };
+        p.Controls.Add(_visualDriveCheck);
+
+        _visualDriveStatus.Width = 400;
+        _visualDriveStatus.Height = 72;
+        _visualDriveStatus.ForeColor =
+            Color.FromArgb(130, 220, 255);
+        _visualDriveStatus.Text =
+            "视觉连续定位：等待初始化";
+        p.Controls.Add(_visualDriveStatus);
+
         var buttons = new FlowLayoutPanel
         {
             Width = 410,
@@ -373,14 +418,28 @@ public sealed class MainForm : Form
         _fireSummary.Text = "火控：—";
         p.Controls.Add(_fireSummary);
 
-        var readSelf = Btn("从屏幕读取当前位置");
-        readSelf.Click += async (_, _) => await ReadPlayerOnceAsync();
+        var readSelf = Btn("① 截图获取当前位置");
+        readSelf.Click += async (_, _) =>
+        {
+            await ReadPlayerOnceAsync();
+            EnsureVisualTrackerInitialized();
+        };
 
-        var readTarget = Btn("读取游戏标记并导航");
-        readTarget.Click += async (_, _) => await ReadTargetOnceAsync();
+        var readTarget = Btn("② 截图获取目的地并规划");
+        readTarget.Click += async (_, _) =>
+            await ReadTargetOnceAsync();
+
+        var resetVisual = Btn("重置视觉定位到当前坐标");
+        resetVisual.Click += (_, _) =>
+        {
+            _visualTracker.Reset();
+            _visualMotion.Reset();
+            EnsureVisualTrackerInitialized();
+        };
 
         p.Controls.Add(readSelf);
         p.Controls.Add(readTarget);
+        p.Controls.Add(resetVisual);
 
         tab.Controls.Add(p);
         return tab;
@@ -849,6 +908,14 @@ public sealed class MainForm : Form
         var visionMap = Btn("框选游戏地图视觉区域");
         visionMap.Click += (_, _) => CalibrateVisionMapRegion();
 
+        var drivingView = Btn("框选前方道路视觉区域");
+        drivingView.Click += (_, _) =>
+            CalibrateDrivingRegion(speedHud: false);
+
+        var speedHud = Btn("框选速度 HUD 区域");
+        speedHud.Click += (_, _) =>
+            CalibrateDrivingRegion(speedHud: true);
+
         var marker = Btn("校准目标标记图标");
         marker.Click += async (_, _) =>
             await CalibrateTargetMarkerAsync();
@@ -873,12 +940,14 @@ public sealed class MainForm : Form
         p.Controls.Add(self);
         p.Controls.Add(target);
         p.Controls.Add(visionMap);
+        p.Controls.Add(drivingView);
+        p.Controls.Add(speedHud);
         p.Controls.Add(marker);
         p.Controls.Add(testRegistration);
         p.Controls.Add(clearVisualMemory);
 
         _calibrationStatus.Width = 400;
-        _calibrationStatus.Height = 205;
+        _calibrationStatus.Height = 285;
         p.Controls.Add(_calibrationStatus);
 
         p.Controls.Add(new Label
@@ -889,9 +958,10 @@ public sealed class MainForm : Form
             ForeColor = Color.Silver,
             Text =
                 "校准区域按游戏窗口客户区比例保存，因此 1080p / 1440p / 4K 切换后仍可复用。\r\n\r\n" +
-                "“游戏地图视觉区域”同时用于 AI 路线视觉检查和本地地图配准；尽量框住地图本体并减少聊天框/菜单遮挡。\r\n\r\n" +
+                "“游戏地图视觉区域”用于地图配准；“前方道路视觉区域”用于 v0.11 连续视觉运动估计，尽量避开固定 HUD。\r\n\r\n" +
+                "速度 HUD 建议只框住 km/h 数字。速度 OCR + 帧间运动 + Road Graph 吸附共同估计累计里程和当前位置。\r\n\r\n" +
                 "目标标记图标只需校准一次：打开游戏地图、放一个目标标记，然后点“校准目标标记图标”并点击标记中心。\r\n\r\n" +
-                "程序只抓取屏幕像素；本地目标识别不读取进程内存、不注入、不安装驱动，也不需要调用 AI API。"
+                "程序只抓取屏幕像素；不读取进程内存、不注入、不安装驱动，也不控制车辆输入。"
         });
 
         tab.Controls.Add(p);
@@ -976,6 +1046,9 @@ public sealed class MainForm : Form
 
         _apiKey.Text = SecretStore.LoadDeepSeekKey();
 
+        _visualDriveCheck.Checked =
+            _settings.VisualContinuousLocalizationEnabled;
+
         _model.SelectedItem = _settings.DeepSeekModel;
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
 
@@ -1007,8 +1080,14 @@ public sealed class MainForm : Form
         _lastTargetOcrUtc = DateTime.MinValue;
         _lastRerouteUtc = DateTime.MinValue;
         _positionFilter.Reset();
+        _visualTracker.Reset();
+        _visualMotion.Reset();
+        _lastHudSpeedKmh = null;
+        _lastHudSpeedOcrUtc = DateTime.MinValue;
+        _lastHudSpeedSuccessUtc = DateTime.MinValue;
         _lastLivePoint = null;
         _headingDeg = null;
+        UpdateVisualDriveStatus();
 
         if (_traceLearning.IsRecording)
         {
@@ -1121,6 +1200,13 @@ public sealed class MainForm : Form
                 token);
 
             _guidance.Reset(_route);
+            EnsureVisualTrackerInitialized();
+            _visualTracker.ApplyHeadingHint(
+                RouteHeadingHint(
+                    _route,
+                    self),
+                0.68);
+            UpdateVisualDriveStatus();
             _lastSpokenCueKey = "";
             _lastRerouteUtc = DateTime.UtcNow;
 
@@ -1228,6 +1314,8 @@ public sealed class MainForm : Form
         if (point is not MapPoint value) return;
 
         SetSelf(value);
+        EnsureVisualTrackerInitialized(
+            forceReset: true);
         UpdateMapState();
     }
 
@@ -1638,8 +1726,19 @@ public sealed class MainForm : Form
             _overlay.Show();
             _positionFilter.Reset();
             _lastLivePoint = null;
-            _headingDeg = null;
             _lastTargetOcrUtc = DateTime.MinValue;
+
+            if (UseVisualContinuousLocalization())
+            {
+                EnsureVisualTrackerInitialized();
+                _visualMotion.Reset();
+            }
+            else
+            {
+                _headingDeg = null;
+            }
+
+            UpdateVisualDriveStatus();
             _liveTimer.Start();
 
             if (_route != null && TryPoint(_selfX, _selfY, out var current))
@@ -1684,26 +1783,51 @@ public sealed class MainForm : Form
         try
         {
         if (!_live && !_traceLearning.IsRecording) return;
-        
-                var rawCurrent = await ReadRegionAsync(
-                    _settings.PlayerRegion,
-                    silent: true);
-
-                if (rawCurrent is not MapPoint rawNow)
-                    return;
 
                 var sampleUtc = DateTime.UtcNow;
+                var visualMode =
+                    UseVisualContinuousLocalization();
 
-                if (!_positionFilter.TryAccept(
-                        rawNow,
-                        sampleUtc,
-                        out var now))
-                    return;
+                MapPoint now;
 
-                if (_lastLivePoint is MapPoint old &&
-                    old.DistanceMeters(now) >= 3)
-                    _headingDeg =
-                        old.BearingDegTo(now);
+                if (visualMode)
+                {
+                    var visualState =
+                        await ReadVisualDrivingStateAsync(
+                            sampleUtc);
+
+                    if (visualState == null)
+                        return;
+
+                    now =
+                        visualState.Position;
+
+                    if (visualState.HeadingDeg.HasValue)
+                        _headingDeg =
+                            visualState.HeadingDeg.Value;
+                }
+                else
+                {
+                    var rawCurrent = await ReadRegionAsync(
+                        _settings.PlayerRegion,
+                        silent: true);
+
+                    if (rawCurrent is not MapPoint rawNow)
+                        return;
+
+                    if (!_positionFilter.TryAccept(
+                            rawNow,
+                            sampleUtc,
+                            out now))
+                        return;
+
+                    if (_lastLivePoint is MapPoint old &&
+                        old.DistanceMeters(now) >= 3)
+                    {
+                        _headingDeg =
+                            old.BearingDegTo(now);
+                    }
+                }
 
                 _lastLivePoint = now;
                 SetSelf(now);
@@ -1755,10 +1879,15 @@ public sealed class MainForm : Form
                     return;
                 }
 
+                var navigationSpeedKmh =
+                    visualMode
+                        ? _visualTracker.LastState.SpeedKmh
+                        : _positionFilter.LastSpeedKmh;
+
                 var cue = _guidance.BuildCue(
                     now,
                     _headingDeg,
-                    _positionFilter.LastSpeedKmh);
+                    navigationSpeedKmh);
 
                 if (cue.ShouldReroute &&
                     DateTime.UtcNow - _lastRerouteUtc >=
@@ -2347,6 +2476,308 @@ public sealed class MainForm : Form
     }
 
 
+    private bool UseVisualContinuousLocalization()
+    {
+        return
+            _settings.VisualContinuousLocalizationEnabled &&
+            _settings.DrivingViewRegion.IsValid;
+    }
+
+    private void EnsureVisualTrackerInitialized(
+        bool forceReset = false)
+    {
+        if (!UseVisualContinuousLocalization())
+        {
+            UpdateVisualDriveStatus();
+            return;
+        }
+
+        if (!TryPoint(
+                _selfX,
+                _selfY,
+                out var current))
+        {
+            UpdateVisualDriveStatus(
+                "等待第①次截图获取绝对当前位置");
+            return;
+        }
+
+        if (forceReset)
+        {
+            _visualTracker.Reset();
+            _visualMotion.Reset();
+            _lastHudSpeedKmh = null;
+            _lastHudSpeedSuccessUtc =
+                DateTime.MinValue;
+        }
+
+        if (!_visualTracker.IsActive)
+        {
+            _visualTracker.Start(
+                current,
+                RouteHeadingHint(
+                    _route,
+                    current) ??
+                _headingDeg,
+                DateTime.UtcNow);
+
+            _visualMotion.Reset();
+        }
+
+        UpdateVisualDriveStatus();
+    }
+
+    private async Task<VisualVehicleState?> ReadVisualDrivingStateAsync(
+        DateTime sampleUtc)
+    {
+        EnsureVisualTrackerInitialized();
+
+        if (!_visualTracker.IsActive)
+            return null;
+
+        try
+        {
+            using var roadView =
+                _capture.Capture(
+                    CaptureSourceTitle(),
+                    _settings.DrivingViewRegion,
+                    _settings.CaptureBackend);
+
+            var motion =
+                _visualMotion.Analyze(
+                    roadView,
+                    sampleUtc);
+
+            if (_settings.SpeedHudRegion.IsValid &&
+                sampleUtc -
+                _lastHudSpeedOcrUtc >=
+                TimeSpan.FromMilliseconds(
+                    _settings.VisualHudSpeedScanMilliseconds))
+            {
+                _lastHudSpeedOcrUtc =
+                    sampleUtc;
+
+                using var speedFrame =
+                    _capture.Capture(
+                        CaptureSourceTitle(),
+                        _settings.SpeedHudRegion,
+                        _settings.CaptureBackend);
+
+                var parsed =
+                    await _ocr.RecognizeSpeedAsync(
+                        speedFrame);
+
+                if (parsed.HasValue)
+                {
+                    _lastHudSpeedKmh =
+                        parsed.Value;
+                    _lastHudSpeedSuccessUtc =
+                        sampleUtc;
+                }
+            }
+
+            double? speed =
+                _lastHudSpeedKmh;
+
+            if (speed.HasValue &&
+                sampleUtc -
+                _lastHudSpeedSuccessUtc >
+                TimeSpan.FromSeconds(5))
+            {
+                speed = null;
+            }
+
+            var vehicle =
+                SelectedNavigationVehicle();
+
+            var state =
+                _visualTracker.Update(
+                    motion,
+                    speed,
+                    vehicle?.SpeedKmh ?? 80,
+                    sampleUtc,
+                    _currentRoadGraph,
+                    _settings.VisualMapMatchMaxMeters);
+
+            UpdateVisualDriveStatus();
+            return state;
+        }
+        catch (Exception ex)
+        {
+            UpdateVisualDriveStatus(
+                "视觉帧读取失败：" +
+                ex.Message);
+
+            return null;
+        }
+    }
+
+    private void UpdateVisualDriveStatus(
+        string? message = null)
+    {
+        if (_visualDriveStatus.IsDisposed)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(
+                message))
+        {
+            _visualDriveStatus.Text =
+                "视觉连续定位：" +
+                message;
+            return;
+        }
+
+        if (!_settings.VisualContinuousLocalizationEnabled)
+        {
+            _visualDriveStatus.Text =
+                "视觉连续定位：关闭 · 使用坐标 OCR";
+            return;
+        }
+
+        if (!_settings.DrivingViewRegion.IsValid)
+        {
+            _visualDriveStatus.Text =
+                "视觉连续定位：请在“校准”页框选前方道路视觉区域";
+            return;
+        }
+
+        if (!_visualTracker.IsActive)
+        {
+            _visualDriveStatus.Text =
+                "视觉连续定位：等待第①次当前位置截图";
+            return;
+        }
+
+        var state =
+            _visualTracker.LastState;
+
+        _visualDriveStatus.Text =
+            "视觉连续定位：" +
+            Math.Round(
+                state.Confidence * 100)
+                .ToString("F0") +
+            "% · " +
+            state.SpeedKmh.ToString("F0") +
+            " km/h (" +
+            state.SpeedSource +
+            ") · 已行驶 " +
+            (
+                state.CumulativeDistanceMeters /
+                1000.0
+            ).ToString("F2") +
+            " km\r\nRoad " +
+            (
+                string.IsNullOrWhiteSpace(
+                    state.EdgeId)
+                    ? "—"
+                    : state.EdgeId
+            ) +
+            " · 路网吸附 " +
+            Math.Round(
+                state.MapMatchConfidence *
+                100)
+                .ToString("F0") +
+            "% · 运动 " +
+            Math.Round(
+                state.Motion01 *
+                100)
+                .ToString("F0") +
+            "%";
+    }
+
+    private static double? RouteHeadingHint(
+        RoutePlan? route,
+        MapPoint current)
+    {
+        if (route == null ||
+            route.Points.Count < 2)
+            return null;
+
+        var bestDistance =
+            double.MaxValue;
+        double? bestBearing = null;
+
+        for (var i = 0;
+             i + 1 < route.Points.Count;
+             i++)
+        {
+            var a =
+                route.Points[i];
+            var b =
+                route.Points[i + 1];
+
+            var distance =
+                Math.Min(
+                    current.DistanceMeters(a),
+                    current.DistanceMeters(b));
+
+            if (distance >= bestDistance)
+                continue;
+
+            bestDistance =
+                distance;
+            bestBearing =
+                a.BearingDegTo(b);
+        }
+
+        return bestBearing;
+    }
+
+    private void CalibrateDrivingRegion(
+        bool speedHud)
+    {
+        var client =
+            _capture.GetClientScreenRect(
+                CaptureSourceTitle());
+
+        if (client == null)
+        {
+            MessageBox.Show(
+                "未找到游戏窗口，请检查采集窗口标题。");
+            return;
+        }
+
+        using var selector =
+            new RegionSelectForm();
+
+        if (selector.ShowDialog(this) !=
+            DialogResult.OK)
+            return;
+
+        var normalized =
+            GameWindowCapture.ToNormalized(
+                selector.SelectedScreenRectangle,
+                client.Value);
+
+        if (!normalized.IsValid)
+        {
+            MessageBox.Show(
+                "视觉选区无效。");
+            return;
+        }
+
+        if (speedHud)
+        {
+            _settings.SpeedHudRegion =
+                normalized;
+        }
+        else
+        {
+            _settings.DrivingViewRegion =
+                normalized;
+            _settings.VisualContinuousLocalizationEnabled =
+                true;
+            _visualDriveCheck.Checked = true;
+            _visualTracker.Reset();
+            _visualMotion.Reset();
+        }
+
+        _settings.Save();
+        UpdateCalibrationStatus();
+        UpdateVisualDriveStatus();
+    }
+
+
     private async Task CalibrateTargetMarkerAsync()
     {
         if (!_settings.VisionMapRegion.IsValid)
@@ -2741,19 +3172,37 @@ public sealed class MainForm : Form
     {
         if (!_traceLearning.IsRecording)
         {
-            if (!_settings.PlayerRegion.IsValid)
+            var visualReady =
+                UseVisualContinuousLocalization();
+
+            if (!visualReady &&
+                !_settings.PlayerRegion.IsValid)
             {
-                MessageBox.Show("请先在“校准”页框选当前位置坐标区域。");
+                MessageBox.Show(
+                    "请先校准“前方道路视觉区域”，或保留当前位置 OCR 区域作为回退。");
                 return;
             }
 
-            MapPoint? current = TryPoint(_selfX, _selfY, out var p) ? p : null;
+            MapPoint? current =
+                TryPoint(
+                    _selfX,
+                    _selfY,
+                    out var p)
+                    ? p
+                    : null;
+
+            if (visualReady)
+                EnsureVisualTrackerInitialized();
+
             _traceLearning.Start(current);
-            _roadLearnButton.Text = "停止并保存实车学习";
+            _roadLearnButton.Text =
+                "停止并保存实车学习";
             _liveTimer.Start();
 
             UpdateRoadGraphStatus(
-                "实车学习已开启。按正常道路驾驶，程序只读取屏幕坐标。");
+                visualReady
+                    ? "实车学习已开启：使用视觉连续定位轨迹，不持续读取坐标 OCR。"
+                    : "实车学习已开启：使用坐标 OCR 回退轨迹。");
             return;
         }
 
@@ -2849,6 +3298,11 @@ public sealed class MainForm : Form
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
             "目标坐标 OCR 区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
             "游戏地图视觉区域：" + FormatRegion(_settings.VisionMapRegion) + "\r\n" +
+            "前方道路视觉区域：" + FormatRegion(_settings.DrivingViewRegion) + "\r\n" +
+            "速度 HUD 区域：" + FormatRegion(_settings.SpeedHudRegion) + "\r\n" +
+            "连续定位：" +
+            (_settings.VisualContinuousLocalizationEnabled ? "开启" : "关闭") +
+            " · " + _roadScene.Status + "\r\n" +
             "目标图标：" + marker + "\r\n" +
             "当前地图视觉记忆：" + registration +
             " · 成功 " + memory.SuccessfulRegistrations +
@@ -2937,9 +3391,9 @@ public sealed class MainForm : Form
         _liveTimer.Interval =
             _settings.PerformanceMode switch
             {
-                RuntimePerformanceMode.LowPower => 1500,
-                RuntimePerformanceMode.Realtime => 700,
-                _ => 1000
+                RuntimePerformanceMode.LowPower => 800,
+                RuntimePerformanceMode.Realtime => 250,
+                _ => 500
             };
     }
 
@@ -2976,12 +3430,21 @@ public sealed class MainForm : Form
                 "  ·  AI缓存 " +
                 _aiVision.CacheHits +
                 "/" +
-                (_aiVision.CacheHits + _aiVision.CacheMisses);
+                (_aiVision.CacheHits + _aiVision.CacheMisses) +
+                "  ·  VDR " +
+                (_visualTracker.IsActive
+                    ? Math.Round(
+                        _visualTracker.LastState.Confidence * 100)
+                        .ToString("F0") + "%/" +
+                      (
+                          _visualTracker.CumulativeDistanceMeters / 1000.0
+                      ).ToString("F2") + "km"
+                    : "OFF");
         }
         catch
         {
             _systemStatus.Text =
-                "WARDOGS 0.10.0";
+                "WARDOGS 0.11.0";
         }
     }
 

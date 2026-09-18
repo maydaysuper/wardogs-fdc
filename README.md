@@ -6,6 +6,12 @@
 
 ## 当前功能
 
+- **v0.11.0 视觉连续定位**：导航初始化改为“两次截图”工作流——先截取当前位置，再截取目的地；进入驾驶后可停止持续读取当前位置坐标 OCR。
+- **本地视觉里程计第一阶段**：持续捕捉用户校准的“前方道路视觉区域”，使用低延迟帧间运动估计得到移动/转向线索；速度 HUD OCR 提供米制距离积分，Road Graph map matching 持续纠正漂移。
+- 导航状态新增视觉定位置信度、实时速度来源、累计实际行驶距离、当前 Road Graph edge 和路网吸附置信度。
+- 实车道路学习可直接使用视觉连续定位轨迹；只有视觉区域未校准时才回退到旧的持续坐标 OCR。
+- 已加入本地深度道路模型接口 `IRoadSceneAnalyzer`。v0.11 不把颜色规则伪装成深度学习模型；后续验证过的道路语义/单目深度 ONNX 模型可以直接接入这个接口，而无需重写导航状态机。
+
 - 游戏窗口区域校准：当前位置坐标区域 / 目标坐标区域按窗口比例保存，兼容 1080p / 1440p / 4K。
 - 本地 OCR：Tesseract 只识别坐标数字；首次使用会下载公开的 `eng.traineddata`。
 - 真实地图：缓存 `wardogs-fdc-web` 中的 Bakurani / Ozeti / Zestafona WebP。
@@ -53,7 +59,11 @@
 ## 架构
 
 ```text
-Screen Capture -> Local OCR -> Current/Target XY
+2x Snapshot OCR -> Start/Target XY
+                         |
+Driving View Capture -> Local Motion + HUD Speed -> Visual Dead Reckoning
+                         |                                  |
+                         |                                  +-> Road Graph Map Matching
                          |
                          +-> EconomyEngine ---------> selected vehicle/destination/load
                          |        (deterministic)
@@ -89,7 +99,7 @@ API Key 不提交仓库。
 ```powershell
 dotnet restore WardogsNavigator.csproj
 dotnet test tests/WardogsNavigator.Tests/WardogsNavigator.Tests.csproj -c Release
-dotnet publish WardogsNavigator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+dotnet publish WardogsNavigator.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish
 ```
 
 然后运行：
@@ -102,9 +112,9 @@ publish\WardogsNavigator.exe
 
 1. WARDOGS 使用窗口化或无边框。
 2. 打开“校准”，确认窗口标题关键字。
-3. 分别框选游戏 UI 中的“当前位置坐标”和“目标标记坐标”区域。
-4. 回到导航页，先点“从屏幕读取当前位置”和“读取游戏标记并导航”验证。
-5. 可开启“自动跟随游戏目标标记”。在游戏内改变目标后，程序会在连续两次识别一致后锁定新目的地并重新规划。
+3. 分别框选游戏 UI 中的“当前位置坐标”和“目标标记坐标”区域；再框选“前方道路视觉区域”和可选的“速度 HUD 区域”。
+4. 回到导航页，先点“① 截图获取当前位置”，再点“② 截图获取目的地并规划”。开启纯视觉连续定位后，驾驶过程中不再持续读取当前位置坐标 OCR。
+5. “自动跟随游戏目标标记”在纯视觉连续定位下默认关闭，避免导航过程中继续频繁截图目标；确有需要时可手工重新打开。在游戏内改变目标后，程序会在连续两次识别一致后锁定新目的地并重新规划。
 6. 点“规划路线”或直接开启“实时导航”。HUD 会按路口显示下一动作、距离、剩余里程、动态 ETA 和路线进度。
 7. “经济”页点“经济自主选择”，双击一个方案即可把该方案的目的地交给独立导航模块。
 8. 在“导航”页选择实际车辆。不同车辆会对土路、支路、桥梁产生不同路径成本和 ETA。
