@@ -88,7 +88,7 @@ public sealed class NavigationPositionFilter
         _lastAcceptedUtc = nowUtc;
 
         _recent.Enqueue(raw);
-        while (_recent.Count > 5)
+        while (_recent.Count > 3)
             _recent.Dequeue();
 
         var median = MedianPoint(_recent);
@@ -97,7 +97,7 @@ public sealed class NavigationPositionFilter
         {
             // Strong enough to suppress OCR jitter, weak enough that a
             // moving vehicle does not feel delayed on the HUD.
-            const double alpha = 0.72;
+            const double alpha = 0.82;
 
             _filtered = new MapPoint(
                 current.X +
