@@ -75,6 +75,7 @@ public sealed class MainForm : Form
     private int _lastCueIndex = -1;
     private string _lastSpokenCueKey = "";
     private CancellationTokenSource? _planCts;
+    private CancellationTokenSource? _predictionCts;
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
     private AiNavigationLearningReport? _lastAiLearningReport;
@@ -124,6 +125,7 @@ public sealed class MainForm : Form
             _tts.Dispose();
             _overlay.Close();
             _planCts?.Cancel();
+            _predictionCts?.Cancel();
             _autoRoadCts?.Cancel();
             _visionCts?.Cancel();
         };
@@ -811,6 +813,7 @@ public sealed class MainForm : Form
             _autoRoadCts?.Cancel();
 
         _visionCts?.Cancel();
+        _predictionCts?.Cancel();
         _lastVisionReport = null;
         _lastAutoVisionScan = DateTime.MinValue;
         _lastTargetOcrUtc = DateTime.MinValue;
@@ -895,8 +898,16 @@ public sealed class MainForm : Form
         }
 
         _planCts?.Cancel();
-        _planCts = new CancellationTokenSource();
-        var token = _planCts.Token;
+        _predictionCts?.Cancel();
+
+        _planCts =
+            new CancellationTokenSource();
+
+        _predictionCts =
+            new CancellationTokenSource();
+
+        var token =
+            _planCts.Token;
 
         try
         {
@@ -983,6 +994,18 @@ public sealed class MainForm : Form
             _overlay.UpdateCue(cue, _route);
             _mapCanvas.SetGuidance(cue);
             UpdateMapState();
+
+            var predictionToken =
+                _predictionCts.Token;
+
+            _ =
+                _routes.WarmPredictedReroutesAsync(
+                    _map.Text,
+                    _route,
+                    preference,
+                    speed,
+                    profile,
+                    predictionToken);
 
             if (speak && _settings.SpeakNavigation)
             {
@@ -2231,7 +2254,10 @@ public sealed class MainForm : Form
                     registration.Confidence *
                     100)
                     .ToString("F0") +
-                "%\r\n" +
+                "% · 旋转 " +
+                registration.RotationDeg
+                    .ToString("+0;-0;0") +
+                "°\r\n" +
                 "视口 X " +
                 left.ToString("F1") +
                 "–" +
@@ -2532,7 +2558,10 @@ public sealed class MainForm : Form
                       memory.LastRegistration.Confidence *
                       100)
                       .ToString("F0") +
-                  "%"
+                  "% · " +
+                  memory.LastRegistration.RotationDeg
+                      .ToString("+0;-0;0") +
+                  "°"
                 : "无";
 
         _calibrationStatus.Text =
