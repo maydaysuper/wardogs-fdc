@@ -15,6 +15,7 @@ public sealed class RoadGraphRouter
         RoutePreference preference,
         VehicleRoutingProfile? vehicleProfile = null,
         IReadOnlyList<NavigationHazard>? hazards = null,
+        double baseSpeedKmh = 80,
         double snapLimitMeters = DefaultSnapLimitMeters)
     {
         if (graph.Nodes.Count < 2 || graph.Edges.Count < 1)
@@ -55,6 +56,11 @@ public sealed class RoadGraphRouter
             {
                 Points = points,
                 DistanceKm = PolylineKm(points),
+                EstimatedMinutes = EstimateMinutes(
+                    points,
+                    new[] { startSnap.Edge },
+                    vehicleProfile,
+                    baseSpeedKmh),
                 StartSnapMeters = startSnap.DistanceMeters,
                 EndSnapMeters = endSnap.DistanceMeters,
                 EdgeCount = 1,
@@ -143,6 +149,11 @@ public sealed class RoadGraphRouter
         {
             Points = routePoints,
             DistanceKm = PolylineKm(routePoints),
+            EstimatedMinutes = EstimateMinutes(
+                routePoints,
+                traversedEdges,
+                vehicleProfile,
+                baseSpeedKmh),
             StartSnapMeters = startSnap.DistanceMeters,
             EndSnapMeters = endSnap.DistanceMeters,
             EdgeCount = traversedEdges.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
@@ -411,6 +422,36 @@ public sealed class RoadGraphRouter
             autoQuality * 0.12,
             0,
             1);
+    }
+
+
+    private static double EstimateMinutes(
+        IReadOnlyList<MapPoint> routePoints,
+        IEnumerable<RoadEdge> edges,
+        VehicleRoutingProfile profile,
+        double baseSpeedKmh)
+    {
+        var km = PolylineKm(routePoints);
+        if (km <= 0 || baseSpeedKmh <= 1) return 0;
+
+        var distinct = edges
+            .GroupBy(e => e.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+
+        if (distinct.Count == 0)
+            return km / baseSpeedKmh * 60.0;
+
+        var factors = distinct.Select(edge =>
+        {
+            var factor = profile.FactorFor(edge.Class);
+            if (edge.VehicleSpeedMultipliers.TryGetValue(profile.VehicleId, out var learned))
+                factor *= Math.Clamp(learned, 0.35, 1.35);
+            return Math.Clamp(factor, 0.25, 1.35);
+        });
+
+        var averageFactor = Math.Max(0.25, factors.Average());
+        return km / (baseSpeedKmh * averageFactor) * 60.0;
     }
 
     private static List<MapPoint> Deduplicate(IEnumerable<MapPoint> points)
