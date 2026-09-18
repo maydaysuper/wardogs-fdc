@@ -2046,6 +2046,221 @@ public sealed class MainForm : Form
     }
 
 
+    private async Task CalibrateTargetMarkerAsync()
+    {
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            MessageBox.Show(
+                "请先框选“游戏地图视觉区域”。");
+            return;
+        }
+
+        try
+        {
+            using var screenshot =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            using var calibrator =
+                new TargetMarkerCalibrationForm(
+                    screenshot);
+
+            if (calibrator.ShowDialog(this) !=
+                DialogResult.OK)
+                return;
+
+            var profile =
+                _targetMarkerDetector.CreateProfile(
+                    screenshot,
+                    calibrator.SelectedPixel);
+
+            if (!profile.IsValid)
+            {
+                MessageBox.Show(
+                    "目标标记样本颜色特征不足。请确保点击的是地图中的彩色目标标记中心。");
+                return;
+            }
+
+            _settings.TargetMarkerProfile =
+                profile;
+            _settings.VisualTargetNavigationEnabled =
+                true;
+            _settings.Save();
+
+            _visualTargetCheck.Checked = true;
+
+            UpdateCalibrationStatus();
+
+            _routeSummary.Text =
+                "目标图标已校准 · Hue " +
+                profile.HueDeg.ToString("F0") +
+                "° · 容差 ±" +
+                profile.HueToleranceDeg.ToString("F0") +
+                "°";
+
+            await TestVisualRegistrationAsync(
+                silent: true);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                "目标标记校准失败：" +
+                ex.Message);
+        }
+    }
+
+    private async Task TestVisualRegistrationAsync(
+        bool silent = false)
+    {
+        if (!_settings.VisionMapRegion.IsValid)
+        {
+            if (!silent)
+            {
+                MessageBox.Show(
+                    "请先框选“游戏地图视觉区域”。");
+            }
+            return;
+        }
+
+        try
+        {
+            using var screenshot =
+                _capture.Capture(
+                    _settings.GameWindowTitleContains,
+                    _settings.VisionMapRegion);
+
+            var mapId =
+                _map.Text;
+
+            var memory =
+                _visualMapMemory.Get(
+                    mapId);
+
+            var hint =
+                _lastMapRegistration?.IsValid == true
+                    ? _lastMapRegistration
+                    : memory.LastRegistration;
+
+            var registration =
+                await _mapVisualRegistration.RegisterAsync(
+                    mapId,
+                    screenshot,
+                    hint);
+
+            if (registration?.IsValid != true)
+            {
+                _visualMapMemory.RecordRegistrationFailure(
+                    mapId);
+
+                if (!silent)
+                {
+                    MessageBox.Show(
+                        "视觉配准失败。请确认游戏中打开的是当前地图，并尽量只框选地图本体。");
+                }
+
+                UpdateCalibrationStatus();
+                return;
+            }
+
+            var accepted =
+                registration.Confidence >=
+                _settings.VisualMapMinRegistrationConfidence;
+
+            if (accepted)
+            {
+                _lastMapRegistration =
+                    registration;
+
+                _visualMapMemory.RecordRegistration(
+                    mapId,
+                    registration);
+
+                _mapCanvas.SetVisualMapState(
+                    registration,
+                    _lastVisualTargetDetection?.Success == true
+                        ? _lastVisualTargetDetection.Point
+                        : memory.LastVisualTarget,
+                    _lastVisualTargetDetection?.Success == true
+                        ? _lastVisualTargetDetection.Confidence
+                        : memory.LastTargetConfidence);
+            }
+            else
+            {
+                _visualMapMemory.RecordRegistrationFailure(
+                    mapId);
+            }
+
+            UpdateCalibrationStatus();
+
+            var left =
+                registration.Left01 *
+                MapPoint.MapSize;
+
+            var right =
+                (
+                    registration.Left01 +
+                    registration.Width01
+                ) *
+                MapPoint.MapSize;
+
+            var top =
+                (
+                    1 -
+                    registration.Top01
+                ) *
+                MapPoint.MapSize;
+
+            var bottom =
+                (
+                    1 -
+                    registration.Top01 -
+                    registration.Height01
+                ) *
+                MapPoint.MapSize;
+
+            var message =
+                "视觉配准 " +
+                (
+                    accepted
+                        ? "通过"
+                        : "置信度不足"
+                ) +
+                " · " +
+                Math.Round(
+                    registration.Confidence *
+                    100)
+                    .ToString("F0") +
+                "%\r\n" +
+                "视口 X " +
+                left.ToString("F1") +
+                "–" +
+                right.ToString("F1") +
+                " · Y " +
+                bottom.ToString("F1") +
+                "–" +
+                top.ToString("F1");
+
+            _routeSummary.Text =
+                message;
+
+            if (!silent)
+            {
+                MessageBox.Show(
+                    message);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+            {
+                MessageBox.Show(
+                    "视觉配准测试失败：" +
+                    ex.Message);
+            }
+        }
+    }
+
     private void CalibrateVisionMapRegion()
     {
         var client =
@@ -2080,6 +2295,16 @@ public sealed class MainForm : Form
 
         _settings.VisionMapRegion =
             normalized;
+
+        _visualMapMemory.Clear(
+            _map.Text);
+        _lastMapRegistration = null;
+        _lastVisualTargetDetection = null;
+        _mapCanvas.SetVisualMapState(
+            null,
+            null,
+            0);
+
         _settings.Save();
         UpdateCalibrationStatus();
     }
