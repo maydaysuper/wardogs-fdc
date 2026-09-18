@@ -851,7 +851,8 @@ public sealed class MainForm : Form
                     preference,
                     _route,
                     _currentRoadGraph,
-                    self);
+                    self,
+                    speed);
             }
 
             var cue = _guidance.BuildCue(self, _headingDeg);
@@ -939,9 +940,14 @@ public sealed class MainForm : Form
             {
                 var vehicle = SelectedNavigationVehicle();
                 var profile = VehicleRoutingProfileService.For(vehicle);
-                var preference = Enum.TryParse<RoutePreference>(_routeMode.Text, out var parsed)
+                var preference = Enum.TryParse<RoutePreference>(
+                        _routeMode.Text,
+                        out var parsed)
                     ? parsed
                     : RoutePreference.Fastest;
+
+                var speed =
+                    vehicle?.SpeedKmh ?? 80;
 
                 _navigationLearning.Start(
                     _map.Text,
@@ -949,7 +955,8 @@ public sealed class MainForm : Form
                     preference,
                     _route,
                     _currentRoadGraph,
-                    current);
+                    current,
+                    speed);
             }
         }
         else
