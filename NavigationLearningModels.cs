@@ -52,6 +52,7 @@ public sealed class NavigationExperience
     public DateTime EndedUtc { get; set; }
     public string MapId { get; set; } = "";
     public string VehicleId { get; set; } = "";
+    public double VehicleBaseSpeedKmh { get; set; } = 80;
     public RoutePreference Preference { get; set; }
     public bool Completed { get; set; }
     public double PlannedDistanceKm { get; set; }

@@ -14,12 +14,15 @@ public sealed class NavigationLearningSession
     private RoutePlan? _route;
     private RoadGraph? _graph;
     private string _vehicleId = "";
+    private double _vehicleBaseSpeedKmh = 80;
     private RoutePreference _preference;
     private string _mapId = "";
     private int _replans;
     private double _maxDeviation;
 
     public bool IsActive { get; private set; }
+    public string VehicleId => _vehicleId;
+    public RoutePreference Preference => _preference;
 
     public void Start(
         string mapId,
@@ -27,7 +30,8 @@ public sealed class NavigationLearningSession
         RoutePreference preference,
         RoutePlan route,
         RoadGraph? graph = null,
-        MapPoint? initial = null)
+        MapPoint? initial = null,
+        double vehicleBaseSpeedKmh = 80)
     {
         Reset();
 
@@ -36,6 +40,7 @@ public sealed class NavigationLearningSession
         _route = route;
         _graph = graph;
         _vehicleId = vehicleId;
+        _vehicleBaseSpeedKmh = Math.Max(1, vehicleBaseSpeedKmh);
         _preference = preference;
         _mapId = mapId;
         _replans = 0;
@@ -134,6 +139,7 @@ public sealed class NavigationLearningSession
             EndedUtc = end,
             MapId = _mapId,
             VehicleId = _vehicleId,
+            VehicleBaseSpeedKmh = _vehicleBaseSpeedKmh,
             Preference = _preference,
             Completed = completed,
             PlannedDistanceKm = _route.DistanceKm,
@@ -240,6 +246,7 @@ public sealed class NavigationLearningSession
         _graph = null;
         _lastPoint = null;
         _lastPointUtc = default;
+        _vehicleBaseSpeedKmh = 80;
     }
 
     private readonly record struct EdgeGeometry(

@@ -288,10 +288,9 @@ public sealed class RoadGraphRouter
     {
         var km = a.DistanceKm(b);
 
-        var speedFactor = vehicleProfile.FactorFor(edge.Class);
-
-        if (edge.VehicleSpeedMultipliers.TryGetValue(vehicleProfile.VehicleId, out var learnedMultiplier))
-            speedFactor *= Math.Clamp(learnedMultiplier, 0.35, 1.35);
+        var speedFactor = LearnedSpeedFactor(
+            edge,
+            vehicleProfile);
 
         var hazardPenalty = hazards
             .Where(h => h.ExpiresUtc > DateTime.UtcNow)
@@ -354,6 +353,46 @@ public sealed class RoadGraphRouter
                     effectiveRisk * 0.70
                 )
         };
+    }
+
+
+    private static double LearnedSpeedFactor(
+        RoadEdge edge,
+        VehicleRoutingProfile profile)
+    {
+        var baseFactor =
+            profile.FactorFor(edge.Class);
+
+        var hasLocal =
+            edge.LocalVehicleSpeedMultipliers.TryGetValue(
+                profile.VehicleId,
+                out var local);
+
+        var hasAi =
+            edge.VehicleSpeedMultipliers.TryGetValue(
+                profile.VehicleId,
+                out var ai);
+
+        double learned = 1.0;
+
+        if (hasLocal && hasAi)
+        {
+            learned =
+                Math.Clamp(local, 0.55, 1.25) * 0.72 +
+                Math.Clamp(ai, 0.55, 1.25) * 0.28;
+        }
+        else if (hasLocal)
+        {
+            learned =
+                Math.Clamp(local, 0.55, 1.25);
+        }
+        else if (hasAi)
+        {
+            learned =
+                Math.Clamp(ai, 0.55, 1.25);
+        }
+
+        return baseFactor * learned;
     }
 
     private static double HeuristicFactor(RoutePreference preference) =>
@@ -462,10 +501,12 @@ public sealed class RoadGraphRouter
 
         var factors = distinct.Select(edge =>
         {
-            var factor = profile.FactorFor(edge.Class);
-            if (edge.VehicleSpeedMultipliers.TryGetValue(profile.VehicleId, out var learned))
-                factor *= Math.Clamp(learned, 0.35, 1.35);
-            return Math.Clamp(factor, 0.25, 1.35);
+            return Math.Clamp(
+                LearnedSpeedFactor(
+                    edge,
+                    profile),
+                0.25,
+                1.35);
         });
 
         var averageFactor = Math.Max(0.25, factors.Average());

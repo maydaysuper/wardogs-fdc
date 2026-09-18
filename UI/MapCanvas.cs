@@ -7,6 +7,7 @@ public sealed class MapCanvas : Control
 {
     private Bitmap? _map;
     private RoutePlan? _route;
+    private NavigationCue? _guidanceCue;
     private MapPoint? _current;
     private MapPoint? _target;
     private MapDefinition? _definition;
@@ -36,6 +37,12 @@ public sealed class MapCanvas : Control
         _current = current;
         _target = target;
         _route = route;
+        Invalidate();
+    }
+
+    public void SetGuidance(NavigationCue? cue)
+    {
+        _guidanceCue = cue;
         Invalidate();
     }
 
@@ -285,18 +292,64 @@ public sealed class MapCanvas : Control
     {
         if (_route?.Points == null || _route.Points.Count < 2) return;
 
-        using var shadow = new Pen(Color.FromArgb(160, 0, 0, 0), 7)
-        {
-            LineJoin = LineJoin.Round
-        };
-        using var pen = new Pen(Color.LimeGreen, 3.2f)
+        var pts = _route.Points
+            .Select(p => ToPixel(rect, p))
+            .ToArray();
+
+        using var shadow = new Pen(
+            Color.FromArgb(170, 0, 0, 0),
+            8)
         {
             LineJoin = LineJoin.Round
         };
 
-        var pts = _route.Points.Select(p => ToPixel(rect, p)).ToArray();
         g.DrawLines(shadow, pts);
-        g.DrawLines(pen, pts);
+
+        var currentSegmentEnd =
+            _guidanceCue == null
+                ? 0
+                : Math.Clamp(
+                    _guidanceCue.RouteIndex,
+                    1,
+                    pts.Length - 1);
+
+        if (currentSegmentEnd > 1)
+        {
+            using var travelled = new Pen(
+                Color.FromArgb(175, 130, 140, 145),
+                3.2f)
+            {
+                LineJoin = LineJoin.Round
+            };
+
+            var travelledPts = pts
+                .Take(currentSegmentEnd)
+                .ToArray();
+
+            if (travelledPts.Length >= 2)
+                g.DrawLines(travelled, travelledPts);
+        }
+
+        using var remaining = new Pen(
+            _guidanceCue?.OffRoute == true
+                ? Color.Orange
+                : Color.LimeGreen,
+            4.0f)
+        {
+            LineJoin = LineJoin.Round
+        };
+
+        var remainingStart =
+            Math.Max(
+                0,
+                currentSegmentEnd - 1);
+
+        var remainingPts = pts
+            .Skip(remainingStart)
+            .ToArray();
+
+        if (remainingPts.Length >= 2)
+            g.DrawLines(remaining, remainingPts);
     }
 
     private void DrawMarkers(Graphics g, Rectangle rect)

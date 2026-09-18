@@ -17,6 +17,7 @@ public sealed class MainForm : Form
     private readonly NavigationVisionEvidenceStore _visionEvidence = new();
     private readonly NavigationExperienceStore _experiences = new();
     private readonly NavigationLearningSession _navigationLearning = new();
+    private readonly NavigationGuidanceTracker _guidance = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly AiNavigationLearningService _aiNavigationLearning;
@@ -32,6 +33,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _map = new();
     private readonly ComboBox _routeMode = new();
     private readonly ComboBox _navVehicle = new();
+    private readonly CheckBox _autoTargetCheck = new();
     private readonly TextBox _selfX = new();
     private readonly TextBox _selfY = new();
     private readonly TextBox _targetX = new();
@@ -60,10 +62,13 @@ public sealed class MainForm : Form
     private bool _roadEditMode;
     private string? _roadEditPreviousNodeId;
     private MapPoint? _lastLivePoint;
+    private MapPoint? _pendingTargetPoint;
+    private int _pendingTargetSamples;
     private double? _headingDeg;
     private bool _live;
     private DateTime _lastSpoken = DateTime.MinValue;
     private int _lastCueIndex = -1;
+    private string _lastSpokenCueKey = "";
     private CancellationTokenSource? _planCts;
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
@@ -171,6 +176,17 @@ public sealed class MainForm : Form
         p.Controls.Add(Header("目标 X / Y"));
         p.Controls.Add(CoordRow(_targetX, _targetY));
 
+        _autoTargetCheck.Text = "自动跟随游戏目标标记";
+        _autoTargetCheck.AutoSize = true;
+        _autoTargetCheck.ForeColor = Color.Gainsboro;
+        _autoTargetCheck.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoReadTarget =
+                _autoTargetCheck.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_autoTargetCheck);
+
         var buttons = new FlowLayoutPanel
         {
             Width = 410,
@@ -256,7 +272,7 @@ public sealed class MainForm : Form
         var readSelf = Btn("从屏幕读取当前位置");
         readSelf.Click += async (_, _) => await ReadPlayerOnceAsync();
 
-        var readTarget = Btn("从屏幕读取目标");
+        var readTarget = Btn("读取游戏标记并导航");
         readTarget.Click += async (_, _) => await ReadTargetOnceAsync();
 
         p.Controls.Add(readSelf);
@@ -667,6 +683,7 @@ public sealed class MainForm : Form
             _settings.CurrentMap = _map.Text;
             _settings.Save();
             _route = null;
+            _guidance.Reset(null);
             await SwitchMapAsync();
         };
 
@@ -724,6 +741,8 @@ public sealed class MainForm : Form
         _model.SelectedItem = _settings.DeepSeekModel;
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
 
+        _autoTargetCheck.Checked =
+            _settings.AutoReadTarget;
         _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
         _aiAutoVisionScan.Checked = _settings.AiAutoVisionScan;
 
@@ -758,6 +777,8 @@ public sealed class MainForm : Form
         _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
+        _mapCanvas.SetGuidance(null);
+        _guidance.Reset(null);
         UpdateHazards();
         UpdateVisionEvidence();
         UpdateRoadGraphStatus();
@@ -835,9 +856,37 @@ public sealed class MainForm : Form
                 profile,
                 token);
 
+            _guidance.Reset(_route);
+            _lastSpokenCueKey = "";
+
             if (_navigationLearning.IsActive)
             {
-                _navigationLearning.NoteReplan(_route);
+                var sameLearningContext =
+                    _navigationLearning.VehicleId.Equals(
+                        profile.VehicleId,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    _navigationLearning.Preference ==
+                        preference;
+
+                if (sameLearningContext)
+                {
+                    _navigationLearning.NoteReplan(
+                        _route);
+                }
+                else
+                {
+                    StoreNavigationExperience(
+                        completed: false);
+
+                    _navigationLearning.Start(
+                        _map.Text,
+                        profile.VehicleId,
+                        preference,
+                        _route,
+                        _currentRoadGraph,
+                        self,
+                        speed);
+                }
             }
             else if (_live)
             {
@@ -847,10 +896,11 @@ public sealed class MainForm : Form
                     preference,
                     _route,
                     _currentRoadGraph,
-                    self);
+                    self,
+                    speed);
             }
 
-            var cue = RoutePlanner.BuildCue(_route, self, _headingDeg);
+            var cue = _guidance.BuildCue(self, _headingDeg);
 
             _routeSummary.Text =
                 "路线：" + _route.DistanceKm.ToString("F2") + " km · ETA " +
@@ -865,10 +915,19 @@ public sealed class MainForm : Form
                 fire.DirectionMils.ToString("F0") + " mil";
 
             _overlay.UpdateCue(cue, _route);
+            _mapCanvas.SetGuidance(cue);
             UpdateMapState();
 
             if (speak && _settings.SpeakNavigation)
-                Speak(cue.Instruction + "。全程 " + _route.DistanceKm.ToString("F1") + " 公里。");
+            {
+                _lastSpokenCueKey = CueSpeechKey(cue);
+                _lastSpoken = DateTime.UtcNow;
+                Speak(
+                    cue.Instruction +
+                    "。全程 " +
+                    _route.DistanceKm.ToString("F1") +
+                    " 公里。");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -893,11 +952,15 @@ public sealed class MainForm : Form
         var point = await ReadRegionAsync(_settings.TargetRegion);
         if (point is not MapPoint value) return;
 
+        _pendingTargetPoint = null;
+        _pendingTargetSamples = 0;
         SetTarget(value);
         await PlanRouteAsync(false);
     }
 
-    private async Task<MapPoint?> ReadRegionAsync(NormalizedRegion region)
+    private async Task<MapPoint?> ReadRegionAsync(
+        NormalizedRegion region,
+        bool silent = false)
     {
         try
         {
@@ -906,9 +969,15 @@ public sealed class MainForm : Form
 
             if (!result.Success)
             {
-                _routeSummary.Text =
-                    "识别失败：" + result.Error +
-                    (string.IsNullOrWhiteSpace(result.RawText) ? "" : " [" + result.RawText + "]");
+                if (!silent)
+                {
+                    _routeSummary.Text =
+                        "识别失败：" + result.Error +
+                        (string.IsNullOrWhiteSpace(result.RawText)
+                            ? ""
+                            : " [" + result.RawText + "]");
+                }
+
                 return null;
             }
 
@@ -916,7 +985,10 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _routeSummary.Text = "截屏/OCR失败：" + ex.Message;
+            if (!silent)
+                _routeSummary.Text =
+                    "截屏/OCR失败：" + ex.Message;
+
             return null;
         }
     }
@@ -935,9 +1007,14 @@ public sealed class MainForm : Form
             {
                 var vehicle = SelectedNavigationVehicle();
                 var profile = VehicleRoutingProfileService.For(vehicle);
-                var preference = Enum.TryParse<RoutePreference>(_routeMode.Text, out var parsed)
+                var preference = Enum.TryParse<RoutePreference>(
+                        _routeMode.Text,
+                        out var parsed)
                     ? parsed
                     : RoutePreference.Fastest;
+
+                var speed =
+                    vehicle?.SpeedKmh ?? 80;
 
                 _navigationLearning.Start(
                     _map.Text,
@@ -945,7 +1022,8 @@ public sealed class MainForm : Form
                     preference,
                     _route,
                     _currentRoadGraph,
-                    current);
+                    current,
+                    speed);
             }
         }
         else
@@ -968,7 +1046,9 @@ public sealed class MainForm : Form
         {
         if (!_live && !_traceLearning.IsRecording) return;
         
-                var current = await ReadRegionAsync(_settings.PlayerRegion);
+                var current = await ReadRegionAsync(
+                    _settings.PlayerRegion,
+                    silent: true);
                 if (current is not MapPoint now) return;
         
                 if (_lastLivePoint is MapPoint old && old.DistanceMeters(now) >= 3)
@@ -993,16 +1073,48 @@ public sealed class MainForm : Form
                     return;
                 }
         
-                if (_settings.AutoReadTarget && _settings.TargetRegion.IsValid)
+                if (_settings.AutoReadTarget &&
+                    _settings.TargetRegion.IsValid)
                 {
-                    var target = await ReadRegionAsync(_settings.TargetRegion);
+                    var target = await ReadRegionAsync(
+                        _settings.TargetRegion,
+                        silent: true);
+
                     if (target is MapPoint targetPoint)
                     {
-                        if (!TryPoint(_targetX, _targetY, out var oldTarget) ||
-                            oldTarget.DistanceMeters(targetPoint) > 12)
+                        var changed =
+                            !TryPoint(
+                                _targetX,
+                                _targetY,
+                                out var oldTarget) ||
+                            oldTarget.DistanceMeters(
+                                targetPoint) > 12;
+
+                        if (!changed)
                         {
-                            SetTarget(targetPoint);
-                            await PlanRouteAsync(false);
+                            _pendingTargetPoint = null;
+                            _pendingTargetSamples = 0;
+                        }
+                        else
+                        {
+                            if (_pendingTargetPoint is MapPoint pending &&
+                                pending.DistanceMeters(targetPoint) <= 20)
+                            {
+                                _pendingTargetSamples++;
+                            }
+                            else
+                            {
+                                _pendingTargetPoint = targetPoint;
+                                _pendingTargetSamples = 1;
+                            }
+
+                            if (_pendingTargetSamples >= 2)
+                            {
+                                SetTarget(targetPoint);
+                                _pendingTargetPoint = null;
+                                _pendingTargetSamples = 0;
+                                await PlanRouteAsync(false);
+                            }
                         }
                     }
                 }
@@ -1012,29 +1124,66 @@ public sealed class MainForm : Form
                     await PlanRouteAsync(false);
                     return;
                 }
-        
-                if (RoutePlanner.DistanceToRouteMeters(_route, now) > 150)
+
+                var cue = _guidance.BuildCue(now, _headingDeg);
+
+                if (cue.ShouldReroute)
                 {
+                    _routeSummary.Text =
+                        "路线：检测到持续偏航 " +
+                        cue.DeviationMeters.ToString("F0") +
+                        " m，正在从当前位置重新规划…";
+
+                    if (_settings.SpeakNavigation &&
+                        DateTime.UtcNow - _lastSpoken >
+                            TimeSpan.FromSeconds(6))
+                    {
+                        _lastSpoken = DateTime.UtcNow;
+                        Speak("已偏离路线，正在重新规划");
+                    }
+
                     await PlanRouteAsync(false);
                     return;
                 }
-        
-                var cue = RoutePlanner.BuildCue(_route, now, _headingDeg);
+
                 _overlay.UpdateCue(cue, _route);
+                _mapCanvas.SetGuidance(cue);
                 UpdateMapState();
-        
+
+                _routeSummary.Text =
+                    "导航：剩余 " +
+                    cue.RemainingKm.ToString("F2") +
+                    " km · ETA " +
+                    cue.RemainingMinutes.ToString("F1") +
+                    " min\r\n" +
+                    cue.Instruction +
+                    " · 偏差 " +
+                    cue.DeviationMeters.ToString("F0") +
+                    " m";
+
+                var cueKey = CueSpeechKey(cue);
+                var promptWindow =
+                    cue.NextDistanceMeters <= 260 ||
+                    DateTime.UtcNow - _lastSpoken >
+                        TimeSpan.FromSeconds(35);
+
                 if (_settings.SpeakNavigation &&
                     !cue.Arrived &&
-                    (cue.RouteIndex != _lastCueIndex ||
-                     DateTime.UtcNow - _lastSpoken > TimeSpan.FromSeconds(20)))
+                    !cue.OffRoute &&
+                    cueKey != _lastSpokenCueKey &&
+                    promptWindow)
                 {
+                    _lastSpokenCueKey = cueKey;
                     _lastCueIndex = cue.RouteIndex;
                     _lastSpoken = DateTime.UtcNow;
                     Speak(cue.Instruction);
                 }
-                else if (cue.Arrived && cue.RouteIndex != _lastCueIndex)
+                else if (cue.Arrived &&
+                         _lastSpokenCueKey != "arrive")
                 {
+                    _lastSpokenCueKey = "arrive";
                     _lastCueIndex = cue.RouteIndex;
+                    _lastSpoken = DateTime.UtcNow;
                     Speak("已到达目的地");
                 }
         
@@ -1771,6 +1920,7 @@ public sealed class MainForm : Form
             " · 已验证 " + stats.VerifiedEdges +
             " · 实车学习 " + stats.LearnedEdges +
             " · 自动 " + stats.AutoEdges +
+            " · 实车速度学习 " + stats.LocalSpeedLearnedEdges +
             " · AI学习 " + stats.AiLearnedEdges +
             "\r\n网络总长 " +
             stats.NetworkKm.ToString("F2") +
@@ -1817,6 +1967,29 @@ public sealed class MainForm : Form
         MapPoint? self = TryPoint(_selfX, _selfY, out var s) ? s : null;
         MapPoint? target = TryPoint(_targetX, _targetY, out var t) ? t : null;
         _mapCanvas.SetState(self, target, _route);
+    }
+
+
+    private static string CueSpeechKey(
+        NavigationCue cue)
+    {
+        if (cue.Arrived)
+            return "arrive";
+
+        var bucket = cue.NextDistanceMeters switch
+        {
+            <= 30 => 0,
+            <= 80 => 1,
+            <= 260 => 2,
+            _ => 3
+        };
+
+        return
+            cue.ManeuverRoutePointIndex +
+            ":" +
+            cue.ManeuverKind +
+            ":" +
+            bucket;
     }
 
     private void Speak(string text)
