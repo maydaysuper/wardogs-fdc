@@ -342,6 +342,8 @@ public sealed class NavigationGuidanceTracker
                 RemainingMinutes = 0,
                 RouteIndex =
                     _route.Points.Count - 1,
+                ManeuverRoutePointIndex =
+                    _route.Points.Count - 1,
                 ManeuverKind =
                     NavigationManeuverKind.Arrive,
                 Progress01 = 1,
@@ -377,6 +379,8 @@ public sealed class NavigationGuidanceTracker
             DesiredBearingDeg = desiredBearing,
             Arrived = false,
             RouteIndex = segmentEndIndex,
+            ManeuverRoutePointIndex =
+                match.NextManeuver?.RoutePointIndex ?? -1,
             ManeuverKind =
                 match.NextManeuver?.Kind ??
                 NavigationManeuverKind.Continue,
