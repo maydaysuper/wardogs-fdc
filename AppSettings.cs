@@ -2,6 +2,20 @@ using System.Text.Json;
 
 namespace WardogsNavigator;
 
+public enum CaptureBackendMode
+{
+    Auto,
+    ScreenCopy,
+    PrintWindow
+}
+
+public enum RuntimePerformanceMode
+{
+    LowPower,
+    Balanced,
+    Realtime
+}
+
 public sealed class NormalizedRegion
 {
     public double X { get; set; }
@@ -15,6 +29,9 @@ public sealed class NormalizedRegion
 public sealed class AppSettings
 {
     public string GameWindowTitleContains { get; set; } = "WARDOGS";
+    public string CaptureWindowTitleContains { get; set; } = "";
+    public CaptureBackendMode CaptureBackend { get; set; } = CaptureBackendMode.Auto;
+    public RuntimePerformanceMode PerformanceMode { get; set; } = RuntimePerformanceMode.Balanced;
     public string CurrentMap { get; set; } = "bakurani";
     public string DeepSeekModel { get; set; } = "deepseek-flash";
     public bool SpeakNavigation { get; set; } = true;
@@ -29,6 +46,8 @@ public sealed class AppSettings
     public bool AiAutoVisionScan { get; set; }
     public double AiVisionMinConfidence { get; set; } = 0.82;
     public int AiVisionEvidenceMinutes { get; set; } = 8;
+    public int AiVisionCacheSeconds { get; set; } = 90;
+    public int AiVisionMaxImageDimension { get; set; } = 1280;
     public RoutePreference RoutePreference { get; set; } = RoutePreference.Fastest;
     public NormalizedRegion PlayerRegion { get; set; } = new();
     public NormalizedRegion TargetRegion { get; set; } = new();
@@ -79,6 +98,24 @@ public sealed class AppSettings
                                 : s.VisualTargetScanSeconds,
                             2,
                             15);
+                    s.AiVisionCacheSeconds =
+                        Math.Clamp(
+                            s.AiVisionCacheSeconds <= 0
+                                ? 90
+                                : s.AiVisionCacheSeconds,
+                            15,
+                            600);
+                    s.AiVisionMaxImageDimension =
+                        Math.Clamp(
+                            s.AiVisionMaxImageDimension <= 0
+                                ? 1280
+                                : s.AiVisionMaxImageDimension,
+                            768,
+                            1920);
+                    if (!Enum.IsDefined(s.CaptureBackend))
+                        s.CaptureBackend = CaptureBackendMode.Auto;
+                    if (!Enum.IsDefined(s.PerformanceMode))
+                        s.PerformanceMode = RuntimePerformanceMode.Balanced;
                     return s;
                 }
             }

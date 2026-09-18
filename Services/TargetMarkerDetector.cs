@@ -1,5 +1,7 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace WardogsNavigator.Services;
 
@@ -213,21 +215,26 @@ public sealed class TargetMarkerDetector
                 width *
                 height];
 
+        var pixels = ReadPixels24(working);
+
         for (var y = 0;
              y < height;
              y++)
         {
+            var row = y * width;
+
             for (var x = 0;
                  x < width;
                  x++)
             {
-                var color =
-                    working.GetPixel(
-                        x,
-                        y);
+                var index = row + x;
+                var pixel = pixels[index];
 
                 var hsv =
-                    ToHsv(color);
+                    ToHsv(
+                        pixel.R,
+                        pixel.G,
+                        pixel.B);
 
                 if (hsv.Saturation <
                         profile.MinSaturation ||
@@ -244,22 +251,23 @@ public sealed class TargetMarkerDetector
                     profile.HueToleranceDeg)
                     continue;
 
-                var rgbDistance =
-                    Math.Sqrt(
-                        Math.Pow(
-                            color.R -
-                            profile.SampleR,
-                            2) +
-                        Math.Pow(
-                            color.G -
-                            profile.SampleG,
-                            2) +
-                        Math.Pow(
-                            color.B -
-                            profile.SampleB,
-                            2));
+                var dr =
+                    pixel.R -
+                    profile.SampleR;
+                var dg =
+                    pixel.G -
+                    profile.SampleG;
+                var db =
+                    pixel.B -
+                    profile.SampleB;
 
-                if (rgbDistance > 165)
+                var rgbDistanceSquared =
+                    dr * dr +
+                    dg * dg +
+                    db * db;
+
+                if (rgbDistanceSquared >
+                    165 * 165)
                     continue;
 
                 var hueScore =
@@ -294,11 +302,6 @@ public sealed class TargetMarkerDetector
 
                 if (score < 0.42)
                     continue;
-
-                var index =
-                    y *
-                    width +
-                    x;
 
                 mask[index] = 1;
                 similarity[index] =
@@ -691,17 +694,113 @@ public sealed class TargetMarkerDetector
         return result;
     }
 
+    private static Rgb24[] ReadPixels24(Bitmap source)
+    {
+        using var packed =
+            new Bitmap(
+                source.Width,
+                source.Height,
+                PixelFormat.Format24bppRgb);
+
+        using (var g =
+               Graphics.FromImage(packed))
+        {
+            g.DrawImageUnscaled(
+                source,
+                0,
+                0);
+        }
+
+        var rect =
+            new Rectangle(
+                0,
+                0,
+                packed.Width,
+                packed.Height);
+
+        var data =
+            packed.LockBits(
+                rect,
+                ImageLockMode.ReadOnly,
+                PixelFormat.Format24bppRgb);
+
+        try
+        {
+            var stride =
+                Math.Abs(data.Stride);
+
+            var row =
+                new byte[stride];
+
+            var pixels =
+                new Rgb24[
+                    packed.Width *
+                    packed.Height];
+
+            for (var y = 0;
+                 y < packed.Height;
+                 y++)
+            {
+                var rowPtr =
+                    data.Scan0 +
+                    y *
+                    data.Stride;
+
+                Marshal.Copy(
+                    rowPtr,
+                    row,
+                    0,
+                    stride);
+
+                var targetRow =
+                    y *
+                    packed.Width;
+
+                for (var x = 0;
+                     x < packed.Width;
+                     x++)
+                {
+                    var offset =
+                        x * 3;
+
+                    pixels[
+                        targetRow +
+                        x] =
+                        new Rgb24(
+                            row[offset + 2],
+                            row[offset + 1],
+                            row[offset]);
+                }
+            }
+
+            return pixels;
+        }
+        finally
+        {
+            packed.UnlockBits(data);
+        }
+    }
+
     private static Hsv ToHsv(
-        Color color)
+        Color color) =>
+        ToHsv(
+            color.R,
+            color.G,
+            color.B);
+
+    private static Hsv ToHsv(
+        byte red,
+        byte green,
+        byte blue)
     {
         var r =
-            color.R /
+            red /
             255.0;
         var g =
-            color.G /
+            green /
             255.0;
         var b =
-            color.B /
+            blue /
             255.0;
 
         var max =
@@ -816,6 +915,11 @@ public sealed class TargetMarkerDetector
         radians *
         180.0 /
         Math.PI;
+
+    private readonly record struct Rgb24(
+        byte R,
+        byte G,
+        byte B);
 
     private readonly record struct Hsv(
         double HueDeg,

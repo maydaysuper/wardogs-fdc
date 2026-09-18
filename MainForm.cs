@@ -27,6 +27,7 @@ public sealed class MainForm : Form
     private readonly TargetMarkerDetector _targetMarkerDetector = new();
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
+    private readonly PerformanceMonitorService _performance = new();
     private readonly CoordinateRecognizer _ocr = new();
     private readonly DeepSeekClient _ai = new();
     private readonly SpeechSynthesizer _tts = new();
@@ -51,6 +52,10 @@ public sealed class MainForm : Form
     private readonly CheckBox _aiAutoApplyLearning = new();
     private readonly CheckBox _aiAutoVisionScan = new();
     private readonly TextBox _windowTitle = new();
+    private readonly TextBox _captureTitle = new();
+    private readonly ComboBox _captureBackend = new();
+    private readonly ComboBox _performanceMode = new();
+    private readonly Label _systemStatus = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
     private readonly ComboBox _roadClass = new();
@@ -59,6 +64,7 @@ public sealed class MainForm : Form
     private readonly Button _roadLearnButton = new();
     private readonly Button _autoRoadButton = new();
     private readonly System.Windows.Forms.Timer _liveTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 1500 };
     private readonly NavigationPositionFilter _positionFilter = new();
 
     private RoutePlan? _route;
@@ -106,22 +112,30 @@ public sealed class MainForm : Form
             new MapVisualRegistrationService(
                 _mapAssets);
 
-        Text = "WARDOGS Tactical Navigator";
-        Width = 1420;
+        Text = "WARDOGS Tactical Navigator · 0.10.0";
+        Width = 1460;
         Height = 860;
         MinimumSize = new Size(1100, 680);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(18, 20, 24);
-        ForeColor = Color.Gainsboro;
+        BackColor = AppTheme.Background;
+        ForeColor = AppTheme.Text;
 
         BuildUi();
+        AppTheme.Apply(this);
         LoadSettingsIntoUi();
         WireEvents();
+        ApplyPerformanceMode();
+
+        _statusTimer.Tick += (_, _) =>
+            UpdateSystemStatus();
+        _statusTimer.Start();
+        UpdateSystemStatus();
 
         Shown += async (_, _) => await SwitchMapAsync();
         FormClosed += (_, _) =>
         {
             _liveTimer.Stop();
+            _statusTimer.Stop();
             _ocr.Dispose();
             _mapAssets.Dispose();
             _tts.Dispose();
@@ -136,21 +150,67 @@ public sealed class MainForm : Form
 
     private void BuildUi()
     {
+        var host = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = AppTheme.Background
+        };
+        Controls.Add(host);
+
+        var top = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 58,
+            Padding = new Padding(16, 8, 16, 8),
+            BackColor = Color.FromArgb(20, 24, 31)
+        };
+
+        var brand = new Label
+        {
+            Dock = DockStyle.Left,
+            Width = 300,
+            Text = "WARDOGS  NAVIGATOR\r\n0.10.0",
+            ForeColor = Color.White,
+            Font = new Font(
+                "Microsoft YaHei UI",
+                11.5f,
+                FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        _systemStatus.Dock = DockStyle.Fill;
+        _systemStatus.ForeColor = AppTheme.Muted;
+        _systemStatus.TextAlign = ContentAlignment.MiddleRight;
+        _systemStatus.Font = new Font(
+            "Microsoft YaHei UI",
+            9.0f);
+
+        top.Controls.Add(_systemStatus);
+        top.Controls.Add(brand);
+
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            BackColor = BackColor,
+            BackColor = AppTheme.Background,
             Panel1MinSize = 500,
-            Panel2MinSize = 360
+            Panel2MinSize = 380,
+            SplitterWidth = 6
         };
-        Controls.Add(split);
-        split.SplitterDistance = Math.Max(500, Math.Min(ClientSize.Width - 380, 860));
+        split.SplitterDistance = Math.Max(
+            500,
+            Math.Min(
+                ClientSize.Width - 410,
+                900));
 
         _mapCanvas.Dock = DockStyle.Fill;
         split.Panel1.Controls.Add(_mapCanvas);
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Point(14, 6)
+        };
         split.Panel2.Controls.Add(tabs);
 
         tabs.TabPages.Add(MakeNavigationTab());
@@ -158,6 +218,9 @@ public sealed class MainForm : Form
         tabs.TabPages.Add(MakeRoadGraphTab());
         tabs.TabPages.Add(MakeAiTab());
         tabs.TabPages.Add(MakeCalibrationTab());
+
+        host.Controls.Add(split);
+        host.Controls.Add(top);
     }
 
     private TabPage MakeNavigationTab()
@@ -644,6 +707,8 @@ public sealed class MainForm : Form
         });
 
         _aiOutput.Multiline = true;
+        _aiOutput.ReadOnly = true;
+        _aiOutput.WordWrap = true;
         _aiOutput.ScrollBars = ScrollBars.Vertical;
         _aiOutput.Width = 400;
         _aiOutput.Height = 430;
@@ -658,19 +723,110 @@ public sealed class MainForm : Form
         var tab = NewTab("校准");
         var p = Flow();
 
-        p.Controls.Add(Header("游戏窗口标题包含"));
+        p.Controls.Add(Header("游戏窗口 / 采集源"));
 
         _windowTitle.Width = 360;
+        _windowTitle.PlaceholderText = "游戏窗口标题，例如 WARDOGS";
         p.Controls.Add(_windowTitle);
 
-        var saveTitle = Btn("保存窗口设置");
+        _captureTitle.Width = 360;
+        _captureTitle.PlaceholderText =
+            "可选：OBS Projector / OBS预览窗口标题；留空则使用游戏窗口";
+        p.Controls.Add(_captureTitle);
+
+        _captureBackend.DropDownStyle =
+            ComboBoxStyle.DropDownList;
+        _captureBackend.Width = 180;
+        _captureBackend.Items.AddRange(
+            new object[]
+            {
+                "自动",
+                "屏幕拷贝",
+                "PrintWindow兼容"
+            });
+
+        _performanceMode.DropDownStyle =
+            ComboBoxStyle.DropDownList;
+        _performanceMode.Width = 180;
+        _performanceMode.Items.AddRange(
+            new object[]
+            {
+                "低占用",
+                "平衡",
+                "实时"
+            });
+
+        var captureRow = new FlowLayoutPanel
+        {
+            Width = 400,
+            Height = 40,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        captureRow.Controls.Add(_captureBackend);
+        captureRow.Controls.Add(_performanceMode);
+        p.Controls.Add(captureRow);
+
+        var saveTitle = Btn("保存采集与性能设置");
         saveTitle.Click += (_, _) =>
         {
-            _settings.GameWindowTitleContains = _windowTitle.Text.Trim();
+            _settings.GameWindowTitleContains =
+                _windowTitle.Text.Trim();
+
+            _settings.CaptureWindowTitleContains =
+                _captureTitle.Text.Trim();
+
+            _settings.CaptureBackend =
+                CaptureBackendFromUi(
+                    _captureBackend.Text);
+
+            _settings.PerformanceMode =
+                PerformanceModeFromUi(
+                    _performanceMode.Text);
+
+            _capture.InvalidateWindowCache();
+            ApplyPerformanceMode();
             _settings.Save();
             UpdateCalibrationStatus();
+            UpdateSystemStatus();
         };
+
+        var testCapture = Btn("测试采集源");
+        testCapture.Click += (_, _) =>
+        {
+            try
+            {
+                using var bitmap =
+                    _capture.CaptureClient(
+                        CaptureSourceTitle(),
+                        _settings.CaptureBackend);
+
+                MessageBox.Show(
+                    "采集成功：" +
+                    bitmap.Width +
+                    "×" +
+                    bitmap.Height +
+                    "\r\n后端：" +
+                    _capture.LastBackendUsed +
+                    "\r\n耗时：" +
+                    _capture.LastCaptureMilliseconds.ToString("F1") +
+                    " ms",
+                    "WARDOGS 采集测试",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "采集失败：" +
+                    ex.Message,
+                    "WARDOGS 采集测试",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        };
+
         p.Controls.Add(saveTitle);
+        p.Controls.Add(testCapture);
 
         var self = Btn("框选当前位置坐标区域");
         self.Click += (_, _) => CalibrateRegion(true);
@@ -789,7 +945,23 @@ public sealed class MainForm : Form
         _routeMode.SelectedItem = _settings.RoutePreference.ToString();
         if (_routeMode.SelectedIndex < 0) _routeMode.SelectedIndex = 0;
 
-        _windowTitle.Text = _settings.GameWindowTitleContains;
+        _windowTitle.Text =
+            _settings.GameWindowTitleContains;
+        _captureTitle.Text =
+            _settings.CaptureWindowTitleContains;
+
+        _captureBackend.SelectedItem =
+            CaptureBackendLabel(
+                _settings.CaptureBackend);
+        if (_captureBackend.SelectedIndex < 0)
+            _captureBackend.SelectedIndex = 0;
+
+        _performanceMode.SelectedItem =
+            PerformanceModeLabel(
+                _settings.PerformanceMode);
+        if (_performanceMode.SelectedIndex < 0)
+            _performanceMode.SelectedIndex = 1;
+
         _apiKey.Text = SecretStore.LoadDeepSeekKey();
 
         _model.SelectedItem = _settings.DeepSeekModel;
@@ -981,7 +1153,10 @@ public sealed class MainForm : Form
                     speed);
             }
 
-            var cue = _guidance.BuildCue(self, _headingDeg);
+            var cue = _guidance.BuildCue(
+                self,
+                _headingDeg,
+                speed);
 
             _routeSummary.Text =
                 "路线：" + _route.DistanceKm.ToString("F2") + " km · ETA " +
@@ -999,17 +1174,21 @@ public sealed class MainForm : Form
             _mapCanvas.SetGuidance(cue);
             UpdateMapState();
 
-            var predictionToken =
-                _predictionCts.Token;
+            if (_settings.PerformanceMode !=
+                RuntimePerformanceMode.LowPower)
+            {
+                var predictionToken =
+                    _predictionCts.Token;
 
-            _ =
-                _routes.WarmPredictedReroutesAsync(
-                    _map.Text,
-                    _route,
-                    preference,
-                    speed,
-                    profile,
-                    predictionToken);
+                _ =
+                    _routes.WarmPredictedReroutesAsync(
+                        _map.Text,
+                        _route,
+                        preference,
+                        speed,
+                        profile,
+                        predictionToken);
+            }
 
             if (speak && _settings.SpeakNavigation)
             {
@@ -1222,8 +1401,9 @@ public sealed class MainForm : Form
         {
             using var screenshot =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             var mapId =
                 _map.Text;
@@ -1397,7 +1577,10 @@ public sealed class MainForm : Form
     {
         try
         {
-            using var bitmap = _capture.Capture(_settings.GameWindowTitleContains, region);
+            using var bitmap = _capture.Capture(
+                CaptureSourceTitle(),
+                region,
+                _settings.CaptureBackend);
             var result =
                 await _ocr.RecognizeAsync(
                     bitmap,
@@ -1432,7 +1615,11 @@ public sealed class MainForm : Form
     private void ToggleLive()
     {
         _live = !_live;
-        _liveButton.Text = _live ? "停止实时导航" : "开始实时导航";
+        _liveButton.Text =
+            _live
+                ? "停止实时导航"
+                : "开始实时导航";
+        UpdateSystemStatus();
 
         if (_live)
         {
@@ -1534,12 +1721,7 @@ public sealed class MainForm : Form
                     _settings.TargetRegion.IsValid;
 
                 var targetScanSeconds =
-                    _settings.VisualTargetNavigationEnabled
-                        ? Math.Clamp(
-                            _settings.VisualTargetScanSeconds,
-                            2,
-                            15)
-                        : 4;
+                    EffectiveTargetScanSeconds();
 
                 if (_settings.AutoReadTarget &&
                     targetReadAvailable &&
@@ -1561,7 +1743,10 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                var cue = _guidance.BuildCue(now, _headingDeg);
+                var cue = _guidance.BuildCue(
+                    now,
+                    _headingDeg,
+                    _positionFilter.LastSpeedKmh);
 
                 if (cue.ShouldReroute &&
                     DateTime.UtcNow - _lastRerouteUtc >=
@@ -1653,7 +1838,11 @@ public sealed class MainForm : Form
                     _route?.EdgeIds.Count > 0 &&
                     !_visionBusy &&
                     DateTime.UtcNow - _lastAutoVisionScan >
-                        TimeSpan.FromMinutes(3))
+                        TimeSpan.FromMinutes(
+                            _settings.PerformanceMode ==
+                                    RuntimePerformanceMode.LowPower
+                                ? 5
+                                : 3))
                 {
                     _lastAutoVisionScan = DateTime.UtcNow;
         
@@ -1776,8 +1965,9 @@ public sealed class MainForm : Form
 
             using var gameMap =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             MapPoint? current =
                 TryPoint(
@@ -1804,6 +1994,12 @@ public sealed class MainForm : Form
                     gameMap,
                     current,
                     target,
+                    _settings.AiVisionCacheSeconds,
+                    _settings.AiVisionMaxImageDimension,
+                    _settings.PerformanceMode ==
+                            RuntimePerformanceMode.LowPower
+                        ? "low"
+                        : "high",
                     localCts.Token);
 
             if (!_map.Text.Equals(
@@ -1966,9 +2162,14 @@ public sealed class MainForm : Form
                     snapshot.ExperienceCount +
                     " 条导航经验…";
 
+            var learningModel =
+                autoApply
+                    ? "deepseek-flash"
+                    : _model.Text;
+
             var report = await _aiNavigationLearning.AnalyzeAsync(
                 _apiKey.Text,
-                _model.Text,
+                learningModel,
                 _map.Text,
                 _currentRoadGraph,
                 snapshot);
@@ -2147,8 +2348,9 @@ public sealed class MainForm : Form
         {
             using var screenshot =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             using var calibrator =
                 new TargetMarkerCalibrationForm(
@@ -2215,8 +2417,9 @@ public sealed class MainForm : Form
         {
             using var screenshot =
                 _capture.Capture(
-                    _settings.GameWindowTitleContains,
-                    _settings.VisionMapRegion);
+                    CaptureSourceTitle(),
+                    _settings.VisionMapRegion,
+                    _settings.CaptureBackend);
 
             var mapId =
                 _map.Text;
@@ -2353,7 +2556,7 @@ public sealed class MainForm : Form
     {
         var client =
             _capture.GetClientScreenRect(
-                _settings.GameWindowTitleContains);
+                CaptureSourceTitle());
 
         if (client == null)
         {
@@ -2399,10 +2602,10 @@ public sealed class MainForm : Form
 
     private void CalibrateRegion(bool player)
     {
-        var client = _capture.GetClientScreenRect(_settings.GameWindowTitleContains);
+        var client = _capture.GetClientScreenRect(CaptureSourceTitle());
         if (client == null)
         {
-            MessageBox.Show("未找到游戏窗口，请先确认窗口标题并使用窗口化/无边框。");
+            MessageBox.Show("未找到采集窗口，请检查游戏/OBS采集源标题。");
             return;
         }
 
@@ -2627,7 +2830,10 @@ public sealed class MainForm : Form
                 : "无";
 
         _calibrationStatus.Text =
-            "窗口：" + _settings.GameWindowTitleContains + "\r\n" +
+            "游戏窗口：" + _settings.GameWindowTitleContains + "\r\n" +
+            "采集源：" + CaptureSourceTitle() +
+            " · " + _settings.CaptureBackend +
+            " · " + _settings.PerformanceMode + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
             "目标坐标 OCR 区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
             "游戏地图视觉区域：" + FormatRegion(_settings.VisionMapRegion) + "\r\n" +
@@ -2635,6 +2841,136 @@ public sealed class MainForm : Form
             "当前地图视觉记忆：" + registration +
             " · 成功 " + memory.SuccessfulRegistrations +
             " / 失败 " + memory.FailedRegistrations;
+    }
+
+    private static string CaptureBackendLabel(
+        CaptureBackendMode mode) =>
+        mode switch
+        {
+            CaptureBackendMode.ScreenCopy =>
+                "屏幕拷贝",
+            CaptureBackendMode.PrintWindow =>
+                "PrintWindow兼容",
+            _ =>
+                "自动"
+        };
+
+    private static CaptureBackendMode CaptureBackendFromUi(
+        string text) =>
+        text switch
+        {
+            "屏幕拷贝" =>
+                CaptureBackendMode.ScreenCopy,
+            "PrintWindow兼容" =>
+                CaptureBackendMode.PrintWindow,
+            _ =>
+                CaptureBackendMode.Auto
+        };
+
+    private static string PerformanceModeLabel(
+        RuntimePerformanceMode mode) =>
+        mode switch
+        {
+            RuntimePerformanceMode.LowPower =>
+                "低占用",
+            RuntimePerformanceMode.Realtime =>
+                "实时",
+            _ =>
+                "平衡"
+        };
+
+    private static RuntimePerformanceMode PerformanceModeFromUi(
+        string text) =>
+        text switch
+        {
+            "低占用" =>
+                RuntimePerformanceMode.LowPower,
+            "实时" =>
+                RuntimePerformanceMode.Realtime,
+            _ =>
+                RuntimePerformanceMode.Balanced
+        };
+
+    private string CaptureSourceTitle()
+    {
+        return string.IsNullOrWhiteSpace(
+                _settings.CaptureWindowTitleContains)
+            ? _settings.GameWindowTitleContains
+            : _settings.CaptureWindowTitleContains;
+    }
+
+    private int EffectiveTargetScanSeconds()
+    {
+        var configured =
+            _settings.VisualTargetNavigationEnabled
+                ? Math.Clamp(
+                    _settings.VisualTargetScanSeconds,
+                    2,
+                    15)
+                : 4;
+
+        return _settings.PerformanceMode switch
+        {
+            RuntimePerformanceMode.LowPower =>
+                Math.Max(5, configured),
+            RuntimePerformanceMode.Realtime =>
+                Math.Max(2, Math.Min(3, configured)),
+            _ =>
+                configured
+        };
+    }
+
+    private void ApplyPerformanceMode()
+    {
+        _liveTimer.Interval =
+            _settings.PerformanceMode switch
+            {
+                RuntimePerformanceMode.LowPower => 1500,
+                RuntimePerformanceMode.Realtime => 700,
+                _ => 1000
+            };
+    }
+
+    private void UpdateSystemStatus()
+    {
+        try
+        {
+            var perf =
+                _performance.Sample();
+
+            var mode =
+                _live
+                    ? "LIVE"
+                    : _traceLearning.IsRecording
+                        ? "LEARN"
+                        : "IDLE";
+
+            _systemStatus.Text =
+                mode +
+                "  ·  " +
+                _settings.PerformanceMode +
+                "  ·  CPU " +
+                perf.CpuPercent.ToString("F1") +
+                "%  ·  RAM " +
+                perf.WorkingSetMb.ToString("F0") +
+                " MB  ·  CAP " +
+                _capture.LastBackendUsed +
+                " " +
+                _capture.LastCaptureMilliseconds.ToString("F1") +
+                " ms  ·  路线缓存 " +
+                _routes.RouteCacheHits +
+                "/" +
+                (_routes.RouteCacheHits + _routes.RouteCacheMisses) +
+                "  ·  AI缓存 " +
+                _aiVision.CacheHits +
+                "/" +
+                (_aiVision.CacheHits + _aiVision.CacheMisses);
+        }
+        catch
+        {
+            _systemStatus.Text =
+                "WARDOGS 0.10.0";
+        }
     }
 
     private static string FormatRegion(NormalizedRegion region)

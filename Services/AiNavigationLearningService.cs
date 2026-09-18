@@ -21,7 +21,7 @@ public sealed class AiNavigationLearningService
     {
         var usefulRecent = snapshot.Recent
             .Where(x => x.EdgeObservations.Count > 0)
-            .Take(30)
+            .Take(20)
             .ToList();
 
         if (usefulRecent.Count < 2)
@@ -76,9 +76,12 @@ public sealed class AiNavigationLearningService
                         g.Average(x => x.Replans)
                 };
             })
-            .Where(x => x.samples >= 2)
-            .OrderByDescending(x => x.samples)
-            .Take(120)
+            .Where(x =>
+                x.samples >= 3 &&
+                x.distanceKm >= 0.02)
+            .OrderByDescending(x => x.completedTrips)
+            .ThenByDescending(x => x.samples)
+            .Take(80)
             .ToList();
 
         if (aggregate.Count == 0)
@@ -96,7 +99,7 @@ public sealed class AiNavigationLearningService
 
         var edgeData = graph.Edges
             .Where(e => relevantEdgeIds.Contains(e.Id))
-            .Take(160)
+            .Take(110)
             .Select(e => new
             {
                 e.Id,
