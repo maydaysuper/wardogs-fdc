@@ -21,6 +21,8 @@ public sealed class NavigationLearningSession
     private double _maxDeviation;
 
     public bool IsActive { get; private set; }
+    public string VehicleId => _vehicleId;
+    public RoutePreference Preference => _preference;
 
     public void Start(
         string mapId,
