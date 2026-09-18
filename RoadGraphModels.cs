@@ -55,6 +55,7 @@ public sealed class RoadGraphRoute
 {
     public List<MapPoint> Points { get; set; } = new();
     public double DistanceKm { get; set; }
+    public double EstimatedMinutes { get; set; }
     public double StartSnapMeters { get; set; }
     public double EndSnapMeters { get; set; }
     public int EdgeCount { get; set; }
