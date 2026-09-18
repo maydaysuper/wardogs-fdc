@@ -154,7 +154,10 @@ public sealed class MapVisualRegistrationService
         var best =
             new Candidate
             {
-                Score = -1
+                Score = -1,
+                RotationDeg =
+                    NormalizeRotation(
+                        hint.RotationDeg)
             };
 
         var widthFactors =
@@ -165,6 +168,16 @@ public sealed class MapVisualRegistrationService
                 1.00,
                 1.05,
                 1.10
+            };
+
+        var rotationOffsets =
+            new[]
+            {
+                -12.0,
+                -6.0,
+                0.0,
+                6.0,
+                12.0
             };
 
         foreach (var widthFactor in widthFactors)
@@ -197,59 +210,84 @@ public sealed class MapVisualRegistrationService
                     0.006,
                     height * 0.055);
 
-            for (var oy = -2;
-                 oy <= 2;
-                 oy++)
+            foreach (var rotationOffset in rotationOffsets)
             {
-                for (var ox = -2;
-                     ox <= 2;
-                     ox++)
+                var rotation =
+                    NormalizeRotation(
+                        hint.RotationDeg +
+                        rotationOffset);
+
+                for (var oy = -2;
+                     oy <= 2;
+                     oy++)
                 {
-                    var left =
-                        Math.Clamp(
-                            hint.Left01 +
-                            ox * stepX,
-                            0,
-                            Math.Max(
-                                0,
-                                1 - width));
-
-                    var top =
-                        Math.Clamp(
-                            hint.Top01 +
-                            oy * stepY,
-                            0,
-                            Math.Max(
-                                0,
-                                1 - height));
-
-                    var score =
-                        Score(
-                            screen,
-                            map,
-                            left,
-                            top,
-                            width,
-                            height);
-
-                    if (score >
-                        best.Score)
+                    for (var ox = -2;
+                         ox <= 2;
+                         ox++)
                     {
-                        best =
-                            new Candidate
-                            {
-                                Left = left,
-                                Top = top,
-                                Width = width,
-                                Height = height,
-                                Score = score
-                            };
+                        var left =
+                            Math.Clamp(
+                                hint.Left01 +
+                                ox * stepX,
+                                0,
+                                Math.Max(
+                                    0,
+                                    1 - width));
+
+                        var top =
+                            Math.Clamp(
+                                hint.Top01 +
+                                oy * stepY,
+                                0,
+                                Math.Max(
+                                    0,
+                                    1 - height));
+
+                        if (!CandidateInsideMap(
+                                left,
+                                top,
+                                width,
+                                height,
+                                rotation))
+                            continue;
+
+                        var score =
+                            Score(
+                                screen,
+                                map,
+                                left,
+                                top,
+                                width,
+                                height,
+                                rotation);
+
+                        if (score >
+                            best.Score)
+                        {
+                            best =
+                                new Candidate
+                                {
+                                    Left = left,
+                                    Top = top,
+                                    Width = width,
+                                    Height = height,
+                                    RotationDeg =
+                                        rotation,
+                                    Score = score
+                                };
+                        }
                     }
                 }
             }
         }
 
-        return best;
+        return best.Score > -0.95
+            ? Refine(
+                screen,
+                map,
+                best,
+                ct)
+            : best;
     }
 
     private static Candidate SearchGlobal(
@@ -277,6 +315,19 @@ public sealed class MapVisualRegistrationService
                 0.33,
                 0.28,
                 0.24
+            };
+
+        var rotations =
+            new[]
+            {
+                0.0,
+                45.0,
+                90.0,
+                135.0,
+                180.0,
+                -135.0,
+                -90.0,
+                -45.0
             };
 
         foreach (var width in widths)
@@ -322,31 +373,46 @@ public sealed class MapVisualRegistrationService
                     maxTop,
                     stepY);
 
-            foreach (var top in ys)
+            foreach (var rotation in rotations)
             {
-                foreach (var left in xs)
+                foreach (var top in ys)
                 {
-                    var score =
-                        Score(
-                            screen,
-                            map,
-                            left,
-                            top,
-                            width,
-                            height);
-
-                    if (score >
-                        best.Score)
+                    foreach (var left in xs)
                     {
-                        best =
-                            new Candidate
-                            {
-                                Left = left,
-                                Top = top,
-                                Width = width,
-                                Height = height,
-                                Score = score
-                            };
+                        if (!CandidateInsideMap(
+                                left,
+                                top,
+                                width,
+                                height,
+                                rotation))
+                            continue;
+
+                        var score =
+                            Score(
+                                screen,
+                                map,
+                                left,
+                                top,
+                                width,
+                                height,
+                                rotation,
+                                18);
+
+                        if (score >
+                            best.Score)
+                        {
+                            best =
+                                new Candidate
+                                {
+                                    Left = left,
+                                    Top = top,
+                                    Width = width,
+                                    Height = height,
+                                    RotationDeg =
+                                        rotation,
+                                    Score = score
+                                };
+                        }
                     }
                 }
             }
@@ -375,6 +441,14 @@ public sealed class MapVisualRegistrationService
                     0 => 0.045,
                     1 => 0.020,
                     _ => 0.008
+                };
+
+            var rotationStep =
+                pass switch
+                {
+                    0 => 12.0,
+                    1 => 5.0,
+                    _ => 2.0
                 };
 
             var moveX =
@@ -415,54 +489,76 @@ public sealed class MapVisualRegistrationService
                 if (height > 1)
                     continue;
 
-                for (var oy = -2;
-                     oy <= 2;
-                     oy++)
+                for (var sr = -2;
+                     sr <= 2;
+                     sr++)
                 {
-                    for (var ox = -2;
-                         ox <= 2;
-                         ox++)
+                    var rotation =
+                        NormalizeRotation(
+                            current.RotationDeg +
+                            sr *
+                            rotationStep);
+
+                    for (var oy = -2;
+                         oy <= 2;
+                         oy++)
                     {
-                        var left =
-                            Math.Clamp(
-                                current.Left +
-                                ox * moveX,
-                                0,
-                                Math.Max(
-                                    0,
-                                    1 - width));
-
-                        var top =
-                            Math.Clamp(
-                                current.Top +
-                                oy * moveY,
-                                0,
-                                Math.Max(
-                                    0,
-                                    1 - height));
-
-                        var score =
-                            Score(
-                                screen,
-                                map,
-                                left,
-                                top,
-                                width,
-                                height,
-                                24);
-
-                        if (score >
-                            best.Score)
+                        for (var ox = -2;
+                             ox <= 2;
+                             ox++)
                         {
-                            best =
-                                new Candidate
-                                {
-                                    Left = left,
-                                    Top = top,
-                                    Width = width,
-                                    Height = height,
-                                    Score = score
-                                };
+                            var left =
+                                Math.Clamp(
+                                    current.Left +
+                                    ox * moveX,
+                                    0,
+                                    Math.Max(
+                                        0,
+                                        1 - width));
+
+                            var top =
+                                Math.Clamp(
+                                    current.Top +
+                                    oy * moveY,
+                                    0,
+                                    Math.Max(
+                                        0,
+                                        1 - height));
+
+                            if (!CandidateInsideMap(
+                                    left,
+                                    top,
+                                    width,
+                                    height,
+                                    rotation))
+                                continue;
+
+                            var score =
+                                Score(
+                                    screen,
+                                    map,
+                                    left,
+                                    top,
+                                    width,
+                                    height,
+                                    rotation,
+                                    24);
+
+                            if (score >
+                                best.Score)
+                            {
+                                best =
+                                    new Candidate
+                                    {
+                                        Left = left,
+                                        Top = top,
+                                        Width = width,
+                                        Height = height,
+                                        RotationDeg =
+                                            rotation,
+                                        Score = score
+                                    };
+                            }
                         }
                     }
                 }
@@ -528,8 +624,28 @@ public sealed class MapVisualRegistrationService
         double top,
         double width,
         double height,
+        double rotationDeg,
         int grid = 20)
     {
+        var centerX =
+            left +
+            width * 0.5;
+
+        var centerY =
+            top +
+            height * 0.5;
+
+        var radians =
+            rotationDeg *
+            Math.PI /
+            180.0;
+
+        var cos =
+            Math.Cos(radians);
+
+        var sin =
+            Math.Sin(radians);
+
         double sumA = 0;
         double sumB = 0;
         double sumAA = 0;
@@ -551,20 +667,9 @@ public sealed class MapVisualRegistrationService
                     v *
                     (screen.Height - 1));
 
-            var mapY01 =
-                top +
-                v *
+            var localY =
+                (v - 0.5) *
                 height;
-
-            var my =
-                (int)Math.Round(
-                    mapY01 *
-                    (map.Height - 1));
-
-            my = Math.Clamp(
-                my,
-                0,
-                map.Height - 1);
 
             for (var gx = 1;
                  gx < grid - 1;
@@ -580,20 +685,33 @@ public sealed class MapVisualRegistrationService
                         u *
                         (screen.Width - 1));
 
-                var mapX01 =
-                    left +
-                    u *
+                var localX =
+                    (u - 0.5) *
                     width;
 
-                var mx =
-                    (int)Math.Round(
-                        mapX01 *
-                        (map.Width - 1));
+                var mapX01 =
+                    centerX +
+                    localX * cos -
+                    localY * sin;
 
-                mx = Math.Clamp(
-                    mx,
-                    0,
-                    map.Width - 1);
+                var mapY01 =
+                    centerY +
+                    localX * sin +
+                    localY * cos;
+
+                if (mapX01 < 0 ||
+                    mapY01 < 0 ||
+                    mapX01 > 1 ||
+                    mapY01 > 1)
+                    continue;
+
+                var mx =
+                    mapX01 *
+                    (map.Width - 1);
+
+                var my =
+                    mapY01 *
+                    (map.Height - 1);
 
                 var a =
                     screen.Edge[
@@ -602,10 +720,12 @@ public sealed class MapVisualRegistrationService
                         sx];
 
                 var b =
-                    map.Edge[
-                        my *
-                        map.Width +
-                        mx];
+                    SampleBilinear(
+                        map.Edge,
+                        map.Width,
+                        map.Height,
+                        mx,
+                        my);
 
                 sumA += a;
                 sumB += b;
@@ -616,7 +736,12 @@ public sealed class MapVisualRegistrationService
             }
         }
 
-        if (count < 20)
+        if (count <
+            Math.Max(
+                20,
+                (grid - 2) *
+                (grid - 2) *
+                0.82))
             return -1;
 
         var cov =
@@ -650,6 +775,156 @@ public sealed class MapVisualRegistrationService
             1);
     }
 
+    private static double SampleBilinear(
+        double[] data,
+        int width,
+        int height,
+        double x,
+        double y)
+    {
+        var x0 =
+            Math.Clamp(
+                (int)Math.Floor(x),
+                0,
+                width - 1);
+
+        var y0 =
+            Math.Clamp(
+                (int)Math.Floor(y),
+                0,
+                height - 1);
+
+        var x1 =
+            Math.Min(
+                width - 1,
+                x0 + 1);
+
+        var y1 =
+            Math.Min(
+                height - 1,
+                y0 + 1);
+
+        var tx =
+            Math.Clamp(
+                x - x0,
+                0,
+                1);
+
+        var ty =
+            Math.Clamp(
+                y - y0,
+                0,
+                1);
+
+        var a =
+            data[
+                y0 *
+                width +
+                x0] *
+            (1 - tx) +
+            data[
+                y0 *
+                width +
+                x1] *
+            tx;
+
+        var b =
+            data[
+                y1 *
+                width +
+                x0] *
+            (1 - tx) +
+            data[
+                y1 *
+                width +
+                x1] *
+            tx;
+
+        return a *
+               (1 - ty) +
+               b *
+               ty;
+    }
+
+    private static bool CandidateInsideMap(
+        double left,
+        double top,
+        double width,
+        double height,
+        double rotationDeg)
+    {
+        var centerX =
+            left +
+            width * 0.5;
+
+        var centerY =
+            top +
+            height * 0.5;
+
+        var radians =
+            rotationDeg *
+            Math.PI /
+            180.0;
+
+        var cos =
+            Math.Cos(radians);
+
+        var sin =
+            Math.Sin(radians);
+
+        var corners =
+            new[]
+            {
+                (-0.5, -0.5),
+                (0.5, -0.5),
+                (0.5, 0.5),
+                (-0.5, 0.5)
+            };
+
+        foreach (var corner in corners)
+        {
+            var lx =
+                corner.Item1 *
+                width;
+
+            var ly =
+                corner.Item2 *
+                height;
+
+            var x =
+                centerX +
+                lx * cos -
+                ly * sin;
+
+            var y =
+                centerY +
+                lx * sin +
+                ly * cos;
+
+            if (x < -0.001 ||
+                y < -0.001 ||
+                x > 1.001 ||
+                y > 1.001)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static double NormalizeRotation(
+        double degrees)
+    {
+        degrees %= 360;
+
+        if (degrees > 180)
+            degrees -= 360;
+
+        if (degrees <= -180)
+            degrees += 360;
+
+        return degrees;
+    }
+
     private static MapViewportRegistration ToRegistration(
         string mapId,
         Candidate best)
@@ -671,6 +946,7 @@ public sealed class MapVisualRegistrationService
             Top01 = best.Top,
             Width01 = best.Width,
             Height01 = best.Height,
+            RotationDeg = best.RotationDeg,
             RawScore = best.Score,
             Confidence = confidence,
             RegisteredUtc =
@@ -684,6 +960,7 @@ public sealed class MapVisualRegistrationService
         public double Top { get; init; }
         public double Width { get; init; }
         public double Height { get; init; }
+        public double RotationDeg { get; init; }
         public double Score { get; init; }
     }
 
