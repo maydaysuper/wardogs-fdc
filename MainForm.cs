@@ -653,7 +653,8 @@ public sealed class MainForm : Form
         }
         else
         {
-            _liveTimer.Stop();
+            if (!_traceLearning.IsRecording)
+                _liveTimer.Stop();
         }
     }
 
