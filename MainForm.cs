@@ -476,6 +476,53 @@ public sealed class MainForm : Form
         row.Controls.Add(analyze);
         p.Controls.Add(row);
 
+        p.Controls.Add(Header("AI 导航学习"));
+
+        _aiAutoApplyLearning.Text = "到达后自动分析并应用高置信建议（实验）";
+        _aiAutoApplyLearning.AutoSize = true;
+        _aiAutoApplyLearning.ForeColor = Color.Gainsboro;
+        _aiAutoApplyLearning.CheckedChanged += (_, _) =>
+        {
+            _settings.AiAutoApplyNavigationLearning = _aiAutoApplyLearning.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_aiAutoApplyLearning);
+
+        var learnRow = new FlowLayoutPanel
+        {
+            Width = 420,
+            Height = 76,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        var analyzeLearning = Btn("AI分析导航经验");
+        analyzeLearning.Click += async (_, _) =>
+            await AnalyzeNavigationLearningAsync(autoApply: false, silent: false);
+
+        var applyLearning = Btn("应用高置信建议");
+        applyLearning.Click += async (_, _) =>
+        {
+            ApplyLastAiLearning(0.72);
+            await PlanRouteAsync(false);
+        };
+
+        var clearLearning = Btn("清除AI路段学习");
+        clearLearning.Click += async (_, _) =>
+        {
+            var changed = _roadGraphs.RemoveAiLearning(_currentRoadGraph);
+            if (changed > 0)
+                SaveRoadGraph();
+
+            _lastAiLearningReport = null;
+            _aiOutput.Text = "已清除当前地图 " + changed + " 条路段的 AI 学习参数。";
+            await PlanRouteAsync(false);
+        };
+
+        learnRow.Controls.Add(analyzeLearning);
+        learnRow.Controls.Add(applyLearning);
+        learnRow.Controls.Add(clearLearning);
+        p.Controls.Add(learnRow);
+
         _aiOutput.Multiline = true;
         _aiOutput.ScrollBars = ScrollBars.Vertical;
         _aiOutput.Width = 400;
@@ -587,6 +634,8 @@ public sealed class MainForm : Form
 
         _model.SelectedItem = _settings.DeepSeekModel;
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
+
+        _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
 
         UpdateCalibrationStatus();
     }
