@@ -20,7 +20,8 @@ public sealed class MapViewportRegistration
         Left01 >= -0.001 &&
         Top01 >= -0.001 &&
         Left01 + Width01 <= 1.001 &&
-        Top01 + Height01 <= 1.001;
+        Top01 + Height01 <= 1.001 &&
+        double.IsFinite(RotationDeg);
 
     public MapPoint ScreenPixelToWorld(
         double x,
