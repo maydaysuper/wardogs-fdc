@@ -25,6 +25,10 @@ public sealed class RoadEdge
     public double Risk { get; set; }
     public int Traversals { get; set; }
     public double AutoScore { get; set; }
+    public Dictionary<string, double> VehicleSpeedMultipliers { get; set; } = new();
+    public double AiConfidence { get; set; }
+    public string AiNote { get; set; } = "";
+    public DateTime? AiUpdatedUtc { get; set; }
     public string Source { get; set; } = "manual";
 }
 
@@ -55,4 +59,5 @@ public sealed class RoadGraphRoute
     public double EndSnapMeters { get; set; }
     public int EdgeCount { get; set; }
     public double Confidence { get; set; }
+    public List<string> EdgeIds { get; set; } = new();
 }
