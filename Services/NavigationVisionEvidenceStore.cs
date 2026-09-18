@@ -59,7 +59,14 @@ public sealed class NavigationVisionEvidenceStore
             .Where(x =>
                 validEdgeIds.Contains(x.EdgeId) &&
                 x.Confidence >= minimumConfidence &&
-                !x.Kind.Equals("clear", StringComparison.OrdinalIgnoreCase))
+                (
+                    x.Kind.Equals(
+                        "blocked",
+                        StringComparison.OrdinalIgnoreCase) ||
+                    x.Kind.Equals(
+                        "danger",
+                        StringComparison.OrdinalIgnoreCase)
+                ))
             .Select(x => new VisionEdgeEvidence
             {
                 MapId = mapId,
