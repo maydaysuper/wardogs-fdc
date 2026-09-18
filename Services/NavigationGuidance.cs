@@ -175,7 +175,8 @@ public sealed class NavigationGuidanceTracker
     }
 
     public NavigationMatch Update(
-        MapPoint current)
+        MapPoint current,
+        double? headingDeg = null)
     {
         if (_route == null ||
             _route.Points.Count == 0)
@@ -209,14 +210,16 @@ public sealed class NavigationGuidanceTracker
             Math.Max(0, _lastSegmentIndex - 2),
             Math.Min(
                 _route.Points.Count - 2,
-                _lastSegmentIndex + 12));
+                _lastSegmentIndex + 12),
+            headingDeg);
 
         if (best.DeviationMeters > 140)
         {
             var global = FindBestMatch(
                 current,
                 0,
-                _route.Points.Count - 2);
+                _route.Points.Count - 2,
+                headingDeg);
 
             if (global.DeviationMeters <
                 best.DeviationMeters)
@@ -232,7 +235,8 @@ public sealed class NavigationGuidanceTracker
                 Math.Max(0, _lastSegmentIndex - 1),
                 Math.Min(
                     _route.Points.Count - 2,
-                    _lastSegmentIndex + 18));
+                    _lastSegmentIndex + 18),
+                headingDeg);
 
             if (forward.DistanceFromStartMeters >=
                 _lastDistanceFromStartMeters - 45)
@@ -313,7 +317,9 @@ public sealed class NavigationGuidanceTracker
         MapPoint current,
         double? headingDeg = null)
     {
-        var match = Update(current);
+        var match = Update(
+            current,
+            headingDeg);
 
         if (_route == null ||
             _route.Points.Count == 0)
@@ -396,7 +402,8 @@ public sealed class NavigationGuidanceTracker
     private SegmentMatch FindBestMatch(
         MapPoint current,
         int startSegment,
-        int endSegment)
+        int endSegment,
+        double? headingDeg)
     {
         SegmentMatch? best = null;
 
@@ -416,15 +423,28 @@ public sealed class NavigationGuidanceTracker
                 _cumulative[i] +
                 a.DistanceMeters(b) * t;
 
+            var segmentBearing =
+                a.BearingDegTo(b);
+
+            var headingPenalty =
+                headingDeg is null
+                    ? 0
+                    : Math.Abs(
+                        NavigationGuidance.NormalizeSigned(
+                            segmentBearing -
+                            headingDeg.Value)) *
+                      0.32;
+
             var candidate = new SegmentMatch(
                 i,
                 projected,
                 deviation,
-                distanceFromStart);
+                distanceFromStart,
+                deviation + headingPenalty);
 
             if (best == null ||
-                candidate.DeviationMeters <
-                best.Value.DeviationMeters)
+                candidate.MatchScore <
+                best.Value.MatchScore)
                 best = candidate;
         }
 
@@ -434,7 +454,9 @@ public sealed class NavigationGuidanceTracker
                    _route!.Points[0],
                    current.DistanceMeters(
                        _route.Points[0]),
-                   0);
+                   0,
+                   current.DistanceMeters(
+                       _route.Points[0]));
     }
 
     private static MapPoint Project(
@@ -469,5 +491,6 @@ public sealed class NavigationGuidanceTracker
         int SegmentIndex,
         MapPoint Projected,
         double DeviationMeters,
-        double DistanceFromStartMeters);
+        double DistanceFromStartMeters,
+        double MatchScore);
 }
