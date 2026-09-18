@@ -199,6 +199,18 @@ public sealed class MainForm : Form
         };
         p.Controls.Add(_autoTargetCheck);
 
+        _visualTargetCheck.Text =
+            "优先使用地图视觉识别目标标记";
+        _visualTargetCheck.AutoSize = true;
+        _visualTargetCheck.ForeColor = Color.Gainsboro;
+        _visualTargetCheck.CheckedChanged += (_, _) =>
+        {
+            _settings.VisualTargetNavigationEnabled =
+                _visualTargetCheck.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_visualTargetCheck);
+
         var buttons = new FlowLayoutPanel
         {
             Width = 410,
@@ -664,24 +676,49 @@ public sealed class MainForm : Form
         var visionMap = Btn("框选游戏地图视觉区域");
         visionMap.Click += (_, _) => CalibrateVisionMapRegion();
 
+        var marker = Btn("校准目标标记图标");
+        marker.Click += async (_, _) =>
+            await CalibrateTargetMarkerAsync();
+
+        var testRegistration = Btn("测试视觉配准");
+        testRegistration.Click += async (_, _) =>
+            await TestVisualRegistrationAsync();
+
+        var clearVisualMemory = Btn("清除当前地图视觉记忆");
+        clearVisualMemory.Click += (_, _) =>
+        {
+            _visualMapMemory.Clear(_map.Text);
+            _lastMapRegistration = null;
+            _lastVisualTargetDetection = null;
+            _mapCanvas.SetVisualMapState(
+                null,
+                null,
+                0);
+            UpdateCalibrationStatus();
+        };
+
         p.Controls.Add(self);
         p.Controls.Add(target);
         p.Controls.Add(visionMap);
+        p.Controls.Add(marker);
+        p.Controls.Add(testRegistration);
+        p.Controls.Add(clearVisualMemory);
 
         _calibrationStatus.Width = 400;
-        _calibrationStatus.Height = 145;
+        _calibrationStatus.Height = 205;
         p.Controls.Add(_calibrationStatus);
 
         p.Controls.Add(new Label
         {
             AutoSize = false,
             Width = 400,
-            Height = 170,
+            Height = 220,
             ForeColor = Color.Silver,
             Text =
                 "校准区域按游戏窗口客户区比例保存，因此 1080p / 1440p / 4K 切换后仍可复用。\r\n\r\n" +
-                "“游戏地图视觉区域”只用于 AI 视觉检查；尽量框住地图本体并减少聊天框/菜单等遮挡。\r\n\r\n" +
-                "程序只抓取屏幕像素；不读取进程内存、不注入、不安装驱动。"
+                "“游戏地图视觉区域”同时用于 AI 路线视觉检查和本地地图配准；尽量框住地图本体并减少聊天框/菜单遮挡。\r\n\r\n" +
+                "目标标记图标只需校准一次：打开游戏地图、放一个目标标记，然后点“校准目标标记图标”并点击标记中心。\r\n\r\n" +
+                "程序只抓取屏幕像素；本地目标识别不读取进程内存、不注入、不安装驱动，也不需要调用 AI API。"
         });
 
         tab.Controls.Add(p);
@@ -755,6 +792,8 @@ public sealed class MainForm : Form
 
         _autoTargetCheck.Checked =
             _settings.AutoReadTarget;
+        _visualTargetCheck.Checked =
+            _settings.VisualTargetNavigationEnabled;
         _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
         _aiAutoVisionScan.Checked = _settings.AiAutoVisionScan;
 
@@ -790,11 +829,20 @@ public sealed class MainForm : Form
 
         var id = _map.Text;
         var bitmap = await _mapAssets.GetBitmapAsync(id);
+        var visualMemory =
+            _visualMapMemory.Get(id);
+        _lastMapRegistration =
+            visualMemory.LastRegistration;
+        _lastVisualTargetDetection = null;
         _currentRoadGraph = _roadGraphs.Load(id);
         _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
         _mapCanvas.SetGuidance(null);
+        _mapCanvas.SetVisualMapState(
+            _lastMapRegistration,
+            visualMemory.LastVisualTarget,
+            visualMemory.LastTargetConfidence);
         _guidance.Reset(null);
         UpdateHazards();
         UpdateVisionEvidence();
@@ -1976,11 +2024,40 @@ public sealed class MainForm : Form
 
     private void UpdateCalibrationStatus()
     {
+        var mapId =
+            string.IsNullOrWhiteSpace(_map.Text)
+                ? _settings.CurrentMap
+                : _map.Text;
+
+        var memory =
+            _visualMapMemory.Get(mapId);
+
+        var marker =
+            _settings.TargetMarkerProfile?.IsValid == true
+                ? "已校准 · Hue " +
+                  _settings.TargetMarkerProfile.HueDeg.ToString("F0") +
+                  "°"
+                : "未校准";
+
+        var registration =
+            memory.LastRegistration?.IsValid == true
+                ? "已记忆 · " +
+                  Math.Round(
+                      memory.LastRegistration.Confidence *
+                      100)
+                      .ToString("F0") +
+                  "%"
+                : "无";
+
         _calibrationStatus.Text =
             "窗口：" + _settings.GameWindowTitleContains + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
-            "目标区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
-            "AI地图视觉区域：" + FormatRegion(_settings.VisionMapRegion);
+            "目标坐标 OCR 区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
+            "游戏地图视觉区域：" + FormatRegion(_settings.VisionMapRegion) + "\r\n" +
+            "目标图标：" + marker + "\r\n" +
+            "当前地图视觉记忆：" + registration +
+            " · 成功 " + memory.SuccessfulRegistrations +
+            " / 失败 " + memory.FailedRegistrations;
     }
 
     private static string FormatRegion(NormalizedRegion region)
