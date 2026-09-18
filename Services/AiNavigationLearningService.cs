@@ -141,7 +141,8 @@ public sealed class AiNavigationLearningService
             "你是 WARDOGS 导航学习分析器。只分析本地程序已经收集到的路线经验，" +
             "不能编造地图、道路、敌情、速度或坐标。输出必须是 JSON。 " +
             "每条建议必须引用输入中真实存在的 edgeId 和 vehicleId。 " +
-            "riskDelta 范围 -0.20 到 0.20；speedMultiplier 范围 0.55 到 1.25；" +
+            "riskDelta 是独立 AI 风险修正层，范围 -0.20 到 0.20，不要累计历史修正；" +
+            "speedMultiplier 范围 0.55 到 1.25；" +
             "confidence 范围 0 到 1。 " +
             "speedMultiplier 是对该车型在该路段相对既有道路速度模型的修正，不是绝对速度。 " +
             "只有多个样本、足够采样点或持续异常时才给高置信度；单次异常必须低置信。 " +
