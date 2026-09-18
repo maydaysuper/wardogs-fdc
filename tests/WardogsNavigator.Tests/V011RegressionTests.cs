@@ -242,4 +242,30 @@ public sealed class V011RegressionTests
         Assert.True(
             state.Confidence > 0.5);
     }
+    [Theory]
+    [InlineData(GlobalNavigationHotKeys.CaptureCurrentId, GlobalNavigationHotKeyAction.CaptureCurrent)]
+    [InlineData(GlobalNavigationHotKeys.CaptureTargetId, GlobalNavigationHotKeyAction.CaptureTarget)]
+    [InlineData(GlobalNavigationHotKeys.ToggleNavigationId, GlobalNavigationHotKeyAction.ToggleNavigation)]
+    public void GlobalHotKeys_MapIdsToExpectedActions(
+        int id,
+        GlobalNavigationHotKeyAction expected)
+    {
+        Assert.True(
+            GlobalNavigationHotKeys.TryGetAction(
+                id,
+                out var action));
+
+        Assert.Equal(
+            expected,
+            action);
+    }
+
+    [Fact]
+    public void GlobalHotKeys_RejectUnknownId()
+    {
+        Assert.False(
+            GlobalNavigationHotKeys.TryGetAction(
+                -1,
+                out _));
+    }
 }
