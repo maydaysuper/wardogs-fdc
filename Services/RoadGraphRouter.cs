@@ -14,6 +14,19 @@ public sealed class RoadGraphRouter
     private readonly Dictionary<string, GraphPath> _pathCache =
         new(StringComparer.Ordinal);
 
+    public int TopologyCacheHits { get; private set; }
+    public int TopologyCacheMisses { get; private set; }
+    public int PathCacheHits { get; private set; }
+    public int PathCacheMisses { get; private set; }
+
+    public void ResetCacheCounters()
+    {
+        TopologyCacheHits = 0;
+        TopologyCacheMisses = 0;
+        PathCacheHits = 0;
+        PathCacheMisses = 0;
+    }
+
     public RoadGraphRoute? TryPlan(
         RoadGraph graph,
         MapPoint start,
@@ -212,7 +225,12 @@ public sealed class RoadGraphRouter
             if (_pathCache.TryGetValue(
                     cacheKey,
                     out var cached))
+            {
+                PathCacheHits++;
                 return ClonePath(cached);
+            }
+
+            PathCacheMisses++;
         }
 
         if (startId.Equals(endId, StringComparison.OrdinalIgnoreCase))
@@ -398,7 +416,12 @@ public sealed class RoadGraphRouter
             if (_topologyCache.TryGetValue(
                     key,
                     out var cached))
+            {
+                TopologyCacheHits++;
                 return cached;
+            }
+
+            TopologyCacheMisses++;
         }
 
         var nodes =
