@@ -1631,6 +1631,406 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void RotatedViewport_RoundTripsWorldAndScreen()
+    {
+        var registration =
+            new MapViewportRegistration
+            {
+                MapId = "test",
+                Left01 = 0.28,
+                Top01 = 0.24,
+                Width01 = 0.42,
+                Height01 = 0.36,
+                RotationDeg = 37,
+                Confidence = 0.90
+            };
+
+        var point =
+            registration.ScreenPixelToWorld(
+                147,
+                82,
+                301,
+                201);
+
+        var pixel =
+            registration.WorldToScreenPixel(
+                point,
+                301,
+                201);
+
+        Assert.InRange(
+            pixel.X,
+            146.4f,
+            147.6f);
+
+        Assert.InRange(
+            pixel.Y,
+            81.4f,
+            82.6f);
+
+        Assert.True(
+            registration.RotatedViewportInsideMap());
+    }
+
+    [Fact]
+    public void VisualRegistration_FindsSyntheticRotatedMapCrop()
+    {
+        using var baseMap =
+            new Bitmap(
+                512,
+                512);
+
+        using (var g =
+               Graphics.FromImage(baseMap))
+        {
+            g.Clear(
+                Color.FromArgb(
+                    34,
+                    41,
+                    37));
+
+            using var road =
+                new Pen(
+                    Color.FromArgb(
+                        225,
+                        214,
+                        190),
+                    8);
+
+            using var detail =
+                new Pen(
+                    Color.FromArgb(
+                        82,
+                        160,
+                        118),
+                    5);
+
+            g.DrawLine(
+                road,
+                35,
+                450,
+                470,
+                80);
+
+            g.DrawLine(
+                road,
+                70,
+                75,
+                440,
+                400);
+
+            g.DrawArc(
+                detail,
+                90,
+                130,
+                260,
+                190,
+                15,
+                250);
+
+            g.DrawRectangle(
+                detail,
+                305,
+                65,
+                115,
+                82);
+
+            using var white =
+                new SolidBrush(
+                    Color.White);
+
+            g.FillEllipse(
+                white,
+                335,
+                258,
+                27,
+                27);
+
+            g.FillRectangle(
+                white,
+                168,
+                316,
+                42,
+                19);
+        }
+
+        var expected =
+            new MapViewportRegistration
+            {
+                MapId = "test",
+                Left01 = 0.27,
+                Top01 = 0.27,
+                Width01 = 0.46,
+                Height01 = 0.46,
+                RotationDeg = 31,
+                Confidence = 1
+            };
+
+        using var screenshot =
+            new Bitmap(
+                320,
+                320);
+
+        for (var y = 0;
+             y < screenshot.Height;
+             y++)
+        {
+            for (var x = 0;
+                 x < screenshot.Width;
+                 x++)
+            {
+                var world =
+                    expected.ScreenPixelToWorld(
+                        x,
+                        y,
+                        screenshot.Width,
+                        screenshot.Height);
+
+                var bx =
+                    Math.Clamp(
+                        (int)Math.Round(
+                            world.X /
+                            MapPoint.MapSize *
+                            (baseMap.Width - 1)),
+                        0,
+                        baseMap.Width - 1);
+
+                var by =
+                    Math.Clamp(
+                        (int)Math.Round(
+                            (
+                                1 -
+                                world.Y /
+                                MapPoint.MapSize
+                            ) *
+                            (baseMap.Height - 1)),
+                        0,
+                        baseMap.Height - 1);
+
+                screenshot.SetPixel(
+                    x,
+                    y,
+                    baseMap.GetPixel(
+                        bx,
+                        by));
+            }
+        }
+
+        using var assets =
+            new MapAssetService();
+
+        var service =
+            new MapVisualRegistrationService(
+                assets);
+
+        var registration =
+            service.RegisterLocal(
+                "test",
+                baseMap,
+                screenshot);
+
+        Assert.NotNull(
+            registration);
+
+        Assert.True(
+            registration!.Confidence >
+            0.30);
+
+        var centerExpected =
+            new MapPoint(
+                0.50 *
+                MapPoint.MapSize,
+                0.50 *
+                MapPoint.MapSize);
+
+        var centerActual =
+            registration.ScreenPixelToWorld(
+                screenshot.Width / 2.0,
+                screenshot.Height / 2.0,
+                screenshot.Width,
+                screenshot.Height);
+
+        Assert.True(
+            centerActual.DistanceMeters(
+                centerExpected) <
+            900);
+
+        var angleError =
+            Math.Abs(
+                NavigationGuidance.NormalizeSigned(
+                    registration.RotationDeg -
+                    expected.RotationDeg));
+
+        Assert.True(
+            angleError <= 15,
+            "rotation error was " +
+            angleError.ToString("F1") +
+            "°");
+
+        Assert.InRange(
+            registration.Width01,
+            0.34,
+            0.58);
+    }
+
+    [Fact]
+    public void RoadGraphRouter_ReusesCorePathCacheAndInvalidatesOnRiskChange()
+    {
+        var graph =
+            new RoadGraph
+            {
+                MapId = "cache-test",
+                UpdatedUtc =
+                    new DateTime(
+                        2026,
+                        9,
+                        18,
+                        0,
+                        0,
+                        0,
+                        DateTimeKind.Utc),
+                Nodes =
+                    new List<RoadNode>
+                    {
+                        new()
+                        {
+                            Id = "a",
+                            Position =
+                                new MapPoint(
+                                    10,
+                                    10)
+                        },
+                        new()
+                        {
+                            Id = "b",
+                            Position =
+                                new MapPoint(
+                                    12,
+                                    10)
+                        },
+                        new()
+                        {
+                            Id = "c",
+                            Position =
+                                new MapPoint(
+                                    14,
+                                    10)
+                        },
+                        new()
+                        {
+                            Id = "d",
+                            Position =
+                                new MapPoint(
+                                    16,
+                                    10)
+                        }
+                    },
+                Edges =
+                    new List<RoadEdge>
+                    {
+                        new()
+                        {
+                            Id = "ab",
+                            A = "a",
+                            B = "b",
+                            Class =
+                                RoadClass.Primary,
+                            Verified = true
+                        },
+                        new()
+                        {
+                            Id = "bc",
+                            A = "b",
+                            B = "c",
+                            Class =
+                                RoadClass.Primary,
+                            Verified = true
+                        },
+                        new()
+                        {
+                            Id = "cd",
+                            A = "c",
+                            B = "d",
+                            Class =
+                                RoadClass.Primary,
+                            Verified = true
+                        }
+                    }
+            };
+
+        var router =
+            new RoadGraphRouter();
+
+        var start =
+            new MapPoint(
+                10.1,
+                10);
+
+        var end =
+            new MapPoint(
+                15.9,
+                10);
+
+        var first =
+            router.TryPlan(
+                graph,
+                start,
+                end,
+                RoutePreference.Fastest,
+                VehicleRoutingProfileService.Generic());
+
+        Assert.NotNull(first);
+
+        var missesAfterFirst =
+            router.PathCacheMisses;
+
+        var second =
+            router.TryPlan(
+                graph,
+                start,
+                end,
+                RoutePreference.Fastest,
+                VehicleRoutingProfileService.Generic());
+
+        Assert.NotNull(second);
+
+        Assert.True(
+            router.PathCacheHits > 0);
+
+        Assert.True(
+            router.TopologyCacheHits > 0);
+
+        var missesBeforeRisk =
+            router.PathCacheMisses;
+
+        var visualRisk =
+            new Dictionary<string, double>(
+                StringComparer.OrdinalIgnoreCase)
+            {
+                ["bc"] = 0.95
+            };
+
+        var third =
+            router.TryPlan(
+                graph,
+                start,
+                end,
+                RoutePreference.Fastest,
+                VehicleRoutingProfileService.Generic(),
+                Array.Empty<NavigationHazard>(),
+                visualRisk);
+
+        Assert.NotNull(third);
+
+        Assert.True(
+            router.PathCacheMisses >
+            missesBeforeRisk);
+
+        Assert.True(
+            missesAfterFirst > 0);
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]
