@@ -199,6 +199,317 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void VehicleProfiles_CanChooseDifferentFastestRoads()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
+                new() { Id = "s", Position = new MapPoint(10, 10) },
+                new() { Id = "p1", Position = new MapPoint(10, 14) },
+                new() { Id = "p2", Position = new MapPoint(14, 14) },
+                new() { Id = "t1", Position = new MapPoint(12, 11) },
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "sp1", A = "s", B = "p1", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "p1p2", A = "p1", B = "p2", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "p2e", A = "p2", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "st1", A = "s", B = "t1", Class = RoadClass.Track, Verified = true },
+                new() { Id = "t1e", A = "t1", B = "e", Class = RoadClass.Track, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
+            }
+        };
+
+        var truck = new VehicleRoutingProfile
+        {
+            VehicleId = "ural",
+            PrimaryFactor = 1.0,
+            SecondaryFactor = 0.75,
+            TrackFactor = 0.35,
+            BridgeFactor = 0.8,
+            RiskTolerance = 0.4
+        };
+
+        var buggy = new VehicleRoutingProfile
+        {
+            VehicleId = "buggy",
+            PrimaryFactor = 1.0,
+            SecondaryFactor = 0.9,
+            TrackFactor = 1.0,
+            BridgeFactor = 0.9,
+            RiskTolerance = 0.7
+        };
+
+        var router = new RoadGraphRouter();
+        var truckRoute = router.TryPlan(
+            graph,
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
+            RoutePreference.Fastest,
+            truck);
+
+        var buggyRoute = router.TryPlan(
+            graph,
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
+            RoutePreference.Fastest,
+            buggy);
+
+        Assert.NotNull(truckRoute);
+        Assert.NotNull(buggyRoute);
+        Assert.Contains("p1p2", truckRoute!.EdgeIds);
+        Assert.DoesNotContain("t1e", truckRoute.EdgeIds);
+        Assert.Contains("t1e", buggyRoute!.EdgeIds);
+        Assert.DoesNotContain("p1p2", buggyRoute.EdgeIds);
+    }
+
+    [Fact]
+    public void SafeRoute_AvoidsTemporaryHazard()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "start", Position = new MapPoint(9, 10) },
+                new() { Id = "s", Position = new MapPoint(10, 10) },
+                new() { Id = "north", Position = new MapPoint(12, 12) },
+                new() { Id = "south", Position = new MapPoint(12, 8) },
+                new() { Id = "e", Position = new MapPoint(14, 10) },
+                new() { Id = "end", Position = new MapPoint(15, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "common-start", A = "start", B = "s", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "sn", A = "s", B = "north", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "ne", A = "north", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "ss", A = "s", B = "south", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "se", A = "south", B = "e", Class = RoadClass.Primary, Verified = true },
+                new() { Id = "common-end", A = "e", B = "end", Class = RoadClass.Primary, Verified = true }
+            }
+        };
+
+        var hazards = new List<NavigationHazard>
+        {
+            new()
+            {
+                MapId = "test",
+                Center = new MapPoint(11, 11),
+                RadiusMeters = 180,
+                Severity = 1,
+                ExpiresUtc = DateTime.UtcNow.AddMinutes(10)
+            }
+        };
+
+        var route = new RoadGraphRouter().TryPlan(
+            graph,
+            new MapPoint(9.1, 10),
+            new MapPoint(14.9, 10),
+            RoutePreference.Safe,
+            VehicleRoutingProfileService.Generic(),
+            hazards);
+
+        Assert.NotNull(route);
+        Assert.Contains("ss", route!.EdgeIds);
+        Assert.Contains("se", route.EdgeIds);
+        Assert.DoesNotContain("sn", route.EdgeIds);
+        Assert.DoesNotContain("ne", route.EdgeIds);
+    }
+
+    [Fact]
+    public void NormalNavigation_CanPromoteStrongAutoRoadEvidence()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "a", Position = new MapPoint(10, 10) },
+                new() { Id = "b", Position = new MapPoint(11, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new()
+                {
+                    Id = "ab",
+                    A = "a",
+                    B = "b",
+                    Source = "auto",
+                    Verified = false,
+                    AutoScore = 0.75
+                }
+            }
+        };
+
+        var experience = new NavigationExperience
+        {
+            MapId = "test",
+            VehicleId = "ural",
+            Completed = true,
+            EdgeObservations = new List<EdgeTravelObservation>
+            {
+                new()
+                {
+                    EdgeId = "ab",
+                    Samples = 5,
+                    DistanceKm = 0.08,
+                    Seconds = 8,
+                    MaxDeviationMeters = 20
+                }
+            }
+        };
+
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store = new RoadGraphStore(temp);
+            Assert.Equal(1, store.RecordNavigationExperience(graph, experience));
+
+            var edge = Assert.Single(graph.Edges);
+            Assert.Equal("trace", edge.Source);
+            Assert.True(edge.Verified);
+            Assert.Equal(1, edge.Traversals);
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void AiLearning_AppliesOnlyHighConfidenceSuggestions()
+    {
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "a", Position = new MapPoint(10, 10) },
+                new() { Id = "b", Position = new MapPoint(11, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "ab", A = "a", B = "b", Verified = true }
+            }
+        };
+
+        var temp = Path.Combine(
+            Path.GetTempPath(),
+            "WardogsNavigatorTests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(temp);
+
+        try
+        {
+            var store = new RoadGraphStore(temp);
+            var applied = store.ApplyAiSuggestions(
+                graph,
+                new[]
+                {
+                    new AiRoadSuggestion
+                    {
+                        EdgeId = "ab",
+                        VehicleId = "ural",
+                        RiskDelta = 0.10,
+                        SpeedMultiplier = 0.72,
+                        Confidence = 0.90,
+                        Reason = "multiple slow traversals"
+                    },
+                    new AiRoadSuggestion
+                    {
+                        EdgeId = "ab",
+                        VehicleId = "buggy",
+                        RiskDelta = 0.20,
+                        SpeedMultiplier = 0.60,
+                        Confidence = 0.30,
+                        Reason = "insufficient sample"
+                    }
+                },
+                0.72);
+
+            Assert.Equal(1, applied);
+            var edge = Assert.Single(graph.Edges);
+            Assert.Equal(0, edge.Risk, 6);
+            Assert.Equal(0.10, edge.AiRiskAdjustment, 6);
+            Assert.Equal(0.72, edge.VehicleSpeedMultipliers["ural"], 6);
+            Assert.False(edge.VehicleSpeedMultipliers.ContainsKey("buggy"));
+            Assert.Equal(0.90, edge.AiConfidence, 6);
+
+            Assert.Equal(1, store.RemoveAiLearning(graph));
+            Assert.Equal(0, edge.AiRiskAdjustment, 6);
+            Assert.Empty(edge.VehicleSpeedMultipliers);
+        }
+        finally
+        {
+            Directory.Delete(temp, true);
+        }
+    }
+
+    [Fact]
+    public void NavigationLearningSession_StoresRouteExperience()
+    {
+        var route = new RoutePlan
+        {
+            MapId = "test",
+            Preference = RoutePreference.Fastest,
+            DistanceKm = 1.2,
+            EdgeIds = new List<string> { "a", "b" },
+            Points = new List<MapPoint>
+            {
+                new(10, 10),
+                new(11, 10)
+            }
+        };
+
+        var session = new NavigationLearningSession();
+        var graph = new RoadGraph
+        {
+            MapId = "test",
+            Nodes = new List<RoadNode>
+            {
+                new() { Id = "n1", Position = new MapPoint(10, 10) },
+                new() { Id = "n2", Position = new MapPoint(11, 10) }
+            },
+            Edges = new List<RoadEdge>
+            {
+                new() { Id = "a", A = "n1", B = "n2", Verified = true }
+            }
+        };
+
+        session.Start(
+            "test",
+            "ural",
+            RoutePreference.Fastest,
+            route,
+            graph,
+            new MapPoint(10, 10));
+
+        session.NotePoint(new MapPoint(10.5, 10));
+        session.NotePoint(new MapPoint(11, 10));
+
+        var result = session.Stop(completed: true);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Completed);
+        Assert.Equal("ural", result.VehicleId);
+        Assert.Contains("a", result.EdgeIds);
+        Assert.True(result.ActualDistanceKm > 0.09);
+        Assert.Contains(result.EdgeObservations, x => x.EdgeId == "a");
+    }
+
+    [Fact]
     public void EconomyOptimizer_RemainsDeterministicAndIndependent()
     {
         var engine = new EconomyEngine(new[]

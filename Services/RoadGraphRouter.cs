@@ -13,10 +13,16 @@ public sealed class RoadGraphRouter
         MapPoint start,
         MapPoint end,
         RoutePreference preference,
+        VehicleRoutingProfile? vehicleProfile = null,
+        IReadOnlyList<NavigationHazard>? hazards = null,
+        double baseSpeedKmh = 80,
         double snapLimitMeters = DefaultSnapLimitMeters)
     {
         if (graph.Nodes.Count < 2 || graph.Edges.Count < 1)
             return null;
+
+        vehicleProfile ??= VehicleRoutingProfileService.Generic();
+        hazards ??= Array.Empty<NavigationHazard>();
 
         var nodes = graph.Nodes.ToDictionary(n => n.Id, StringComparer.OrdinalIgnoreCase);
         var usableEdges = graph.Edges
@@ -50,9 +56,15 @@ public sealed class RoadGraphRouter
             {
                 Points = points,
                 DistanceKm = PolylineKm(points),
+                EstimatedMinutes = EstimateMinutes(
+                    points,
+                    new[] { startSnap.Edge },
+                    vehicleProfile,
+                    baseSpeedKmh),
                 StartSnapMeters = startSnap.DistanceMeters,
                 EndSnapMeters = endSnap.DistanceMeters,
                 EdgeCount = 1,
+                EdgeIds = new List<string> { startSnap.Edge.Id },
                 Confidence = Confidence(
                     startSnap.DistanceMeters,
                     endSnap.DistanceMeters,
@@ -83,7 +95,9 @@ public sealed class RoadGraphRouter
                     e.NodeId,
                     usableEdges,
                     nodes,
-                    preference);
+                    preference,
+                    vehicleProfile,
+                    hazards);
 
                 if (graphPath == null) continue;
 
@@ -135,9 +149,15 @@ public sealed class RoadGraphRouter
         {
             Points = routePoints,
             DistanceKm = PolylineKm(routePoints),
+            EstimatedMinutes = EstimateMinutes(
+                routePoints,
+                traversedEdges,
+                vehicleProfile,
+                baseSpeedKmh),
             StartSnapMeters = startSnap.DistanceMeters,
             EndSnapMeters = endSnap.DistanceMeters,
             EdgeCount = traversedEdges.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            EdgeIds = traversedEdges.Select(e => e.Id).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             Confidence = Confidence(
                 startSnap.DistanceMeters,
                 endSnap.DistanceMeters,
@@ -150,7 +170,9 @@ public sealed class RoadGraphRouter
         string endId,
         IReadOnlyList<RoadEdge> edges,
         IReadOnlyDictionary<string, RoadNode> nodes,
-        RoutePreference preference)
+        RoutePreference preference,
+        VehicleRoutingProfile vehicleProfile,
+        IReadOnlyList<NavigationHazard> hazards)
     {
         if (startId.Equals(endId, StringComparison.OrdinalIgnoreCase))
             return new GraphPath
@@ -199,7 +221,13 @@ public sealed class RoadGraphRouter
                     !nodes.TryGetValue(next.To, out var toNode))
                     continue;
 
-                var edgeCost = Cost(next.Edge, fromNode.Position, toNode.Position, preference);
+                var edgeCost = Cost(
+                    next.Edge,
+                    fromNode.Position,
+                    toNode.Position,
+                    preference,
+                    vehicleProfile,
+                    hazards);
                 var candidate = currentCost + edgeCost;
 
                 if (dist.TryGetValue(next.To, out var old) && candidate >= old)
@@ -247,17 +275,25 @@ public sealed class RoadGraphRouter
         RoadEdge edge,
         MapPoint a,
         MapPoint b,
-        RoutePreference preference)
+        RoutePreference preference,
+        VehicleRoutingProfile vehicleProfile,
+        IReadOnlyList<NavigationHazard> hazards)
     {
         var km = a.DistanceKm(b);
-        var speedFactor = edge.Class switch
-        {
-            RoadClass.Primary => 1.00,
-            RoadClass.Bridge => 0.90,
-            RoadClass.Secondary => 0.82,
-            RoadClass.Track => 0.58,
-            _ => 0.80
-        };
+
+        var speedFactor = vehicleProfile.FactorFor(edge.Class);
+
+        if (edge.VehicleSpeedMultipliers.TryGetValue(vehicleProfile.VehicleId, out var learnedMultiplier))
+            speedFactor *= Math.Clamp(learnedMultiplier, 0.35, 1.35);
+
+        var hazardPenalty = hazards
+            .Where(h => h.ExpiresUtc > DateTime.UtcNow)
+            .Where(h =>
+                h.Center.DistanceMeters(Project(h.Center, a, b)) <=
+                h.RadiusMeters)
+            .Select(h => Math.Clamp(h.Severity, 0, 1))
+            .DefaultIfEmpty(0)
+            .Max();
 
         var autoPenalty = edge.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)
             ? (1.0 - Math.Clamp(edge.AutoScore, 0, 1)) * 0.85 + 0.18
@@ -268,18 +304,38 @@ public sealed class RoadGraphRouter
             (edge.Traversals > 0 ? 0.0 : 0.18) +
             autoPenalty;
 
+        var staticRisk = Math.Clamp(
+            edge.Risk + edge.AiRiskAdjustment,
+            0,
+            1);
+        var effectiveRisk = Math.Clamp(
+            staticRisk + hazardPenalty * (1.15 - vehicleProfile.RiskTolerance * 0.55),
+            0,
+            1.8);
+
         return preference switch
         {
-            RoutePreference.Shortest => km,
+            RoutePreference.Shortest =>
+                km * (1.0 + hazardPenalty * 0.35),
+
             RoutePreference.Safe =>
-                km * (
+                km / Math.Max(0.25, speedFactor) *
+                (
                     1.0 +
-                    Math.Clamp(edge.Risk, 0, 1) * 3.5 +
+                    effectiveRisk * 4.2 +
                     confidencePenalty +
-                    (edge.Class == RoadClass.Track ? 0.45 : 0)),
+                    (edge.Class == RoadClass.Track
+                        ? Math.Max(0.0, 0.50 - vehicleProfile.TrackFactor * 0.25)
+                        : 0)
+                ),
+
             _ =>
                 km / Math.Max(0.25, speedFactor) *
-                (1.0 + confidencePenalty * 0.25)
+                (
+                    1.0 +
+                    confidencePenalty * 0.25 +
+                    effectiveRisk * 0.70
+                )
         };
     }
 
@@ -367,6 +423,36 @@ public sealed class RoadGraphRouter
             autoQuality * 0.12,
             0,
             1);
+    }
+
+
+    private static double EstimateMinutes(
+        IReadOnlyList<MapPoint> routePoints,
+        IEnumerable<RoadEdge> edges,
+        VehicleRoutingProfile profile,
+        double baseSpeedKmh)
+    {
+        var km = PolylineKm(routePoints);
+        if (km <= 0 || baseSpeedKmh <= 1) return 0;
+
+        var distinct = edges
+            .GroupBy(e => e.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+
+        if (distinct.Count == 0)
+            return km / baseSpeedKmh * 60.0;
+
+        var factors = distinct.Select(edge =>
+        {
+            var factor = profile.FactorFor(edge.Class);
+            if (edge.VehicleSpeedMultipliers.TryGetValue(profile.VehicleId, out var learned))
+                factor *= Math.Clamp(learned, 0.35, 1.35);
+            return Math.Clamp(factor, 0.25, 1.35);
+        });
+
+        var averageFactor = Math.Max(0.25, factors.Average());
+        return km / (baseSpeedKmh * averageFactor) * 60.0;
     }
 
     private static List<MapPoint> Deduplicate(IEnumerable<MapPoint> points)

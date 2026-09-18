@@ -13,8 +13,12 @@ public sealed class MainForm : Form
     private readonly MapCatalog _maps = new();
     private readonly EconomyEngine _economy = new();
     private readonly RoadGraphStore _roadGraphs = new();
+    private readonly NavigationHazardStore _hazards = new();
+    private readonly NavigationExperienceStore _experiences = new();
+    private readonly NavigationLearningSession _navigationLearning = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
+    private readonly AiNavigationLearningService _aiNavigationLearning;
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -25,6 +29,7 @@ public sealed class MainForm : Form
     private readonly MapCanvas _mapCanvas = new();
     private readonly ComboBox _map = new();
     private readonly ComboBox _routeMode = new();
+    private readonly ComboBox _navVehicle = new();
     private readonly TextBox _selfX = new();
     private readonly TextBox _selfY = new();
     private readonly TextBox _targetX = new();
@@ -35,6 +40,7 @@ public sealed class MainForm : Form
     private readonly TextBox _apiKey = new();
     private readonly ComboBox _model = new();
     private readonly TextBox _aiOutput = new();
+    private readonly CheckBox _aiAutoApplyLearning = new();
     private readonly TextBox _windowTitle = new();
     private readonly Label _calibrationStatus = new();
     private readonly Button _liveButton = new();
@@ -58,11 +64,14 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _planCts;
     private CancellationTokenSource? _autoRoadCts;
     private string? _autoExtractMapId;
+    private AiNavigationLearningReport? _lastAiLearningReport;
+    private bool _aiLearningBusy;
 
     public MainForm()
     {
-        _routes = new RoutePlanner(_mapAssets, _roadGraphs);
+        _routes = new RoutePlanner(_mapAssets, _roadGraphs, _hazards);
         _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
+        _aiNavigationLearning = new AiNavigationLearningService(_ai);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
@@ -128,9 +137,19 @@ public sealed class MainForm : Form
         _routeMode.Items.AddRange(Enum.GetNames<RoutePreference>());
         _routeMode.Width = 360;
 
+        _navVehicle.DropDownStyle = ComboBoxStyle.DropDownList;
+        _navVehicle.Width = 360;
+        _navVehicle.Items.Clear();
+        _navVehicle.Items.Add(new NavVehicleItem(null, "通用地面车辆"));
+        foreach (var vehicle in _economy.Vehicles)
+            _navVehicle.Items.Add(new NavVehicleItem(vehicle, vehicle.NameZh));
+        _navVehicle.SelectedIndex = 0;
+
         p.Controls.Add(Header("地图 / 路线"));
         p.Controls.Add(_map);
         p.Controls.Add(_routeMode);
+        p.Controls.Add(Header("导航车辆"));
+        p.Controls.Add(_navVehicle);
 
         p.Controls.Add(Header("当前位置 X / Y"));
         p.Controls.Add(CoordRow(_selfX, _selfY));
@@ -166,6 +185,47 @@ public sealed class MainForm : Form
         buttons.Controls.Add(_liveButton);
         buttons.Controls.Add(hud);
         p.Controls.Add(buttons);
+
+        var hazardButtons = new FlowLayoutPanel
+        {
+            Width = 410,
+            Height = 42,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        var addHazard = Btn("当前位置危险 300m/15min");
+        addHazard.Click += async (_, _) =>
+        {
+            if (!TryPoint(_selfX, _selfY, out var current))
+            {
+                MessageBox.Show("请先读取当前位置。");
+                return;
+            }
+
+            _hazards.Add(
+                _map.Text,
+                current,
+                300,
+                0.80,
+                TimeSpan.FromMinutes(15),
+                "临时危险区",
+                "manual");
+
+            UpdateHazards();
+            await PlanRouteAsync(false);
+        };
+
+        var clearHazards = Btn("清除临时危险");
+        clearHazards.Click += async (_, _) =>
+        {
+            _hazards.ClearMap(_map.Text);
+            UpdateHazards();
+            await PlanRouteAsync(false);
+        };
+
+        hazardButtons.Controls.Add(addHazard);
+        hazardButtons.Controls.Add(clearHazards);
+        p.Controls.Add(hazardButtons);
 
         _routeSummary.Width = 400;
         _routeSummary.Height = 78;
@@ -417,6 +477,53 @@ public sealed class MainForm : Form
         row.Controls.Add(analyze);
         p.Controls.Add(row);
 
+        p.Controls.Add(Header("AI 导航学习"));
+
+        _aiAutoApplyLearning.Text = "到达后自动分析并应用高置信建议（实验）";
+        _aiAutoApplyLearning.AutoSize = true;
+        _aiAutoApplyLearning.ForeColor = Color.Gainsboro;
+        _aiAutoApplyLearning.CheckedChanged += (_, _) =>
+        {
+            _settings.AiAutoApplyNavigationLearning = _aiAutoApplyLearning.Checked;
+            _settings.Save();
+        };
+        p.Controls.Add(_aiAutoApplyLearning);
+
+        var learnRow = new FlowLayoutPanel
+        {
+            Width = 420,
+            Height = 76,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        var analyzeLearning = Btn("AI分析导航经验");
+        analyzeLearning.Click += async (_, _) =>
+            await AnalyzeNavigationLearningAsync(autoApply: false, silent: false);
+
+        var applyLearning = Btn("应用高置信建议");
+        applyLearning.Click += async (_, _) =>
+        {
+            ApplyLastAiLearning(0.72);
+            await PlanRouteAsync(false);
+        };
+
+        var clearLearning = Btn("清除AI路段学习");
+        clearLearning.Click += async (_, _) =>
+        {
+            var changed = _roadGraphs.RemoveAiLearning(_currentRoadGraph);
+            if (changed > 0)
+                SaveRoadGraph();
+
+            _lastAiLearningReport = null;
+            _aiOutput.Text = "已清除当前地图 " + changed + " 条路段的 AI 学习参数。";
+            await PlanRouteAsync(false);
+        };
+
+        learnRow.Controls.Add(analyzeLearning);
+        learnRow.Controls.Add(applyLearning);
+        learnRow.Controls.Add(clearLearning);
+        p.Controls.Add(learnRow);
+
         _aiOutput.Multiline = true;
         _aiOutput.ScrollBars = ScrollBars.Vertical;
         _aiOutput.Width = 400;
@@ -484,13 +591,22 @@ public sealed class MainForm : Form
             await SwitchMapAsync();
         };
 
-        _routeMode.SelectedIndexChanged += (_, _) =>
+        _routeMode.SelectedIndexChanged += async (_, _) =>
         {
             if (Enum.TryParse<RoutePreference>(_routeMode.Text, out var pref))
             {
                 _settings.RoutePreference = pref;
                 _settings.Save();
             }
+
+            if (_route != null)
+                await PlanRouteAsync(false);
+        };
+
+        _navVehicle.SelectedIndexChanged += async (_, _) =>
+        {
+            if (_route != null)
+                await PlanRouteAsync(false);
         };
 
         _mapCanvas.MapClicked += point =>
@@ -529,11 +645,15 @@ public sealed class MainForm : Form
         _model.SelectedItem = _settings.DeepSeekModel;
         if (_model.SelectedIndex < 0) _model.SelectedIndex = 0;
 
+        _aiAutoApplyLearning.Checked = _settings.AiAutoApplyNavigationLearning;
+
         UpdateCalibrationStatus();
     }
 
     private async Task SwitchMapAsync()
     {
+        StoreNavigationExperience(completed: false);
+
         var requestedMapId = _map.Text;
 
         if (_autoExtractMapId != null &&
@@ -554,6 +674,7 @@ public sealed class MainForm : Form
         _roadEditPreviousNodeId = null;
         _mapCanvas.SetMap(bitmap, _maps.Get(id));
         _mapCanvas.SetRoadGraph(_currentRoadGraph);
+        UpdateHazards();
         UpdateRoadGraphStatus();
         UpdateMapState();
 
@@ -588,6 +709,7 @@ public sealed class MainForm : Form
         if (_economyGrid.CurrentRow?.DataBoundItem is not EconomyRow row) return;
 
         _selectedEconomicPlan = row.Plan;
+        SelectNavigationVehicle(row.Plan.Vehicle.Id);
         SetTarget(row.Plan.Destination.Position);
         await PlanRouteAsync(true);
     }
@@ -607,9 +729,11 @@ public sealed class MainForm : Form
 
         try
         {
+            UpdateHazards();
             _routeSummary.Text = "路线：正在分析真实地图道路…";
 
-            var vehicle = _selectedEconomicPlan?.Vehicle;
+            var vehicle = SelectedNavigationVehicle();
+            var profile = VehicleRoutingProfileService.For(vehicle);
             var speed = vehicle?.SpeedKmh ?? 80;
             var air = vehicle?.Air ?? false;
             var preference = Enum.TryParse<RoutePreference>(_routeMode.Text, out var parsed)
@@ -623,7 +747,23 @@ public sealed class MainForm : Form
                 preference,
                 speed,
                 air,
+                profile,
                 token);
+
+            if (_navigationLearning.IsActive)
+            {
+                _navigationLearning.NoteReplan(_route);
+            }
+            else if (_live)
+            {
+                _navigationLearning.Start(
+                    _map.Text,
+                    profile.VehicleId,
+                    preference,
+                    _route,
+                    _currentRoadGraph,
+                    self);
+            }
 
             var cue = RoutePlanner.BuildCue(_route, self, _headingDeg);
 
@@ -705,9 +845,28 @@ public sealed class MainForm : Form
         {
             _overlay.Show();
             _liveTimer.Start();
+
+            if (_route != null && TryPoint(_selfX, _selfY, out var current))
+            {
+                var vehicle = SelectedNavigationVehicle();
+                var profile = VehicleRoutingProfileService.For(vehicle);
+                var preference = Enum.TryParse<RoutePreference>(_routeMode.Text, out var parsed)
+                    ? parsed
+                    : RoutePreference.Fastest;
+
+                _navigationLearning.Start(
+                    _map.Text,
+                    profile.VehicleId,
+                    preference,
+                    _route,
+                    _currentRoadGraph,
+                    current);
+            }
         }
         else
         {
+            StoreNavigationExperience(completed: false);
+
             if (!_traceLearning.IsRecording)
                 _liveTimer.Stop();
         }
@@ -725,6 +884,7 @@ public sealed class MainForm : Form
 
         _lastLivePoint = now;
         SetSelf(now);
+        _navigationLearning.NotePoint(now);
 
         if (_traceLearning.IsRecording)
         {
@@ -785,6 +945,24 @@ public sealed class MainForm : Form
             _lastCueIndex = cue.RouteIndex;
             Speak("已到达目的地");
         }
+
+        if (cue.Arrived && _navigationLearning.IsActive)
+        {
+            StoreNavigationExperience(completed: true);
+
+            if (_settings.AiAutoApplyNavigationLearning &&
+                !string.IsNullOrWhiteSpace(_apiKey.Text))
+            {
+                var snapshot = _experiences.Snapshot(_map.Text);
+                if (snapshot.CompletedCount >= 3 &&
+                    snapshot.CompletedCount % 3 == 0)
+                {
+                    await AnalyzeNavigationLearningAsync(
+                        autoApply: true,
+                        silent: true);
+                }
+            }
+        }
     }
 
     private async Task TestAiAsync()
@@ -814,12 +992,19 @@ public sealed class MainForm : Form
                   "，3趟预计净利 $" + _selectedEconomicPlan.SessionNet.ToString("F0") +
                   "，$" + _selectedEconomicPlan.SessionPerMinute.ToString("F1") + "/min。";
 
+            var navVehicle = SelectedNavigationVehicle();
+            var hazards = _hazards.GetActive(_map.Text);
+            var learning = _experiences.Snapshot(_map.Text, 10);
+
             var routeText = _route == null
                 ? "当前没有路线。"
-                : "路线：" + _route.Preference +
+                : "导航车辆：" + (navVehicle?.NameZh ?? "通用地面车辆") +
+                  "；路线：" + _route.Preference +
                   "，" + _route.DistanceKm.ToString("F2") + "km" +
                   "，ETA " + _route.EstimatedMinutes.ToString("F1") + "min" +
-                  "，来源 " + _route.Source + "。";
+                  "，来源 " + _route.Source +
+                  "，当前临时危险区 " + hazards.Count +
+                  "，已有导航学习样本 " + learning.ExperienceCount + "。";
 
             _aiOutput.Text = "DeepSeek 分析中…";
             _aiOutput.Text = await _ai.AskAsync(
@@ -833,6 +1018,173 @@ public sealed class MainForm : Form
         {
             _aiOutput.Text = ex.Message;
         }
+    }
+
+
+    private async Task AnalyzeNavigationLearningAsync(bool autoApply, bool silent)
+    {
+        if (_aiLearningBusy)
+            return;
+
+        _aiLearningBusy = true;
+
+        try
+        {
+            var snapshot = _experiences.Snapshot(_map.Text, 30);
+
+            if (snapshot.ExperienceCount < 2)
+            {
+                if (!silent)
+                    _aiOutput.Text = "导航学习样本不足：至少完成/记录 2 次导航后再分析。";
+                return;
+            }
+
+            if (!silent)
+                _aiOutput.Text =
+                    "DeepSeek 正在分析 " +
+                    snapshot.ExperienceCount +
+                    " 条导航经验…";
+
+            var report = await _aiNavigationLearning.AnalyzeAsync(
+                _apiKey.Text,
+                _model.Text,
+                _map.Text,
+                _currentRoadGraph,
+                snapshot);
+
+            _lastAiLearningReport = report;
+
+            var applied = 0;
+            if (autoApply)
+            {
+                applied = _roadGraphs.ApplyAiSuggestions(
+                    _currentRoadGraph,
+                    report.Suggestions,
+                    _settings.AiLearningMinConfidence);
+
+                if (applied > 0)
+                    SaveRoadGraph();
+            }
+
+            if (!silent)
+            {
+                var lines = report.Suggestions
+                    .OrderByDescending(s => s.Confidence)
+                    .Take(20)
+                    .Select(s =>
+                        s.EdgeId +
+                        " · " +
+                        s.VehicleId +
+                        " · 速度×" +
+                        s.SpeedMultiplier.ToString("F2") +
+                        " · 风险Δ" +
+                        s.RiskDelta.ToString("+0.00;-0.00;0.00") +
+                        " · 置信 " +
+                        Math.Round(s.Confidence * 100).ToString("F0") +
+                        "% · " +
+                        s.Reason)
+                    .ToList();
+
+                _aiOutput.Text =
+                    report.Summary +
+                    "\r\n\r\n" +
+                    (lines.Count == 0
+                        ? "没有足够可信的路段建议。"
+                        : string.Join("\r\n", lines)) +
+                    (autoApply
+                        ? "\r\n\r\n自动应用 " + applied + " 条高置信建议。"
+                        : "");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+                _aiOutput.Text = "AI 导航学习失败：" + ex.Message;
+        }
+        finally
+        {
+            _aiLearningBusy = false;
+        }
+    }
+
+    private void ApplyLastAiLearning(double minimumConfidence)
+    {
+        if (_lastAiLearningReport == null)
+        {
+            _aiOutput.Text = "请先执行“AI分析导航经验”。";
+            return;
+        }
+
+        var applied = _roadGraphs.ApplyAiSuggestions(
+            _currentRoadGraph,
+            _lastAiLearningReport.Suggestions,
+            minimumConfidence);
+
+        if (applied > 0)
+            SaveRoadGraph();
+
+        _aiOutput.Text =
+            _lastAiLearningReport.Summary +
+            "\r\n\r\n已应用 " +
+            applied +
+            " 条置信度 ≥ " +
+            Math.Round(minimumConfidence * 100).ToString("F0") +
+            "% 的建议。";
+    }
+
+    private void StoreNavigationExperience(bool completed)
+    {
+        var experience = _navigationLearning.Stop(completed);
+        if (experience == null)
+            return;
+
+        if (!completed &&
+            experience.ActualDistanceKm < 0.03 &&
+            experience.DurationMinutes < 0.20)
+            return;
+
+        _experiences.Append(experience);
+
+        var changed = _roadGraphs.RecordNavigationExperience(
+            _currentRoadGraph,
+            experience);
+
+        if (changed > 0)
+        {
+            _roadGraphs.Save(_currentRoadGraph);
+
+            if (_currentRoadGraph.MapId.Equals(
+                    _map.Text,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _currentRoadGraph = _roadGraphs.Load(_map.Text);
+                _mapCanvas.SetRoadGraph(_currentRoadGraph);
+            }
+        }
+    }
+
+    private VehicleSpec? SelectedNavigationVehicle()
+    {
+        return _navVehicle.SelectedItem is NavVehicleItem item
+            ? item.Vehicle
+            : _selectedEconomicPlan?.Vehicle;
+    }
+
+    private void SelectNavigationVehicle(string vehicleId)
+    {
+        foreach (var item in _navVehicle.Items.OfType<NavVehicleItem>())
+        {
+            if (item.Vehicle?.Id.Equals(vehicleId, StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _navVehicle.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
+    private void UpdateHazards()
+    {
+        _mapCanvas.SetHazards(_hazards.GetActive(_map.Text));
     }
 
     private void CalibrateRegion(bool player)
@@ -1161,6 +1513,20 @@ public sealed class MainForm : Form
         row.Controls.Add(y);
 
         return row;
+    }
+
+    private sealed class NavVehicleItem
+    {
+        public VehicleSpec? Vehicle { get; }
+        private readonly string _label;
+
+        public NavVehicleItem(VehicleSpec? vehicle, string label)
+        {
+            Vehicle = vehicle;
+            _label = label;
+        }
+
+        public override string ToString() => _label;
     }
 
     private sealed class EconomyRow

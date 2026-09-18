@@ -25,6 +25,11 @@ public sealed class RoadEdge
     public double Risk { get; set; }
     public int Traversals { get; set; }
     public double AutoScore { get; set; }
+    public Dictionary<string, double> VehicleSpeedMultipliers { get; set; } = new();
+    public double AiRiskAdjustment { get; set; }
+    public double AiConfidence { get; set; }
+    public string AiNote { get; set; } = "";
+    public DateTime? AiUpdatedUtc { get; set; }
     public string Source { get; set; } = "manual";
 }
 
@@ -44,6 +49,7 @@ public sealed class RoadGraphStats
     public int VerifiedEdges { get; set; }
     public int LearnedEdges { get; set; }
     public int AutoEdges { get; set; }
+    public int AiLearnedEdges { get; set; }
     public double NetworkKm { get; set; }
 }
 
@@ -51,8 +57,10 @@ public sealed class RoadGraphRoute
 {
     public List<MapPoint> Points { get; set; } = new();
     public double DistanceKm { get; set; }
+    public double EstimatedMinutes { get; set; }
     public double StartSnapMeters { get; set; }
     public double EndSnapMeters { get; set; }
     public int EdgeCount { get; set; }
     public double Confidence { get; set; }
+    public List<string> EdgeIds { get; set; } = new();
 }

@@ -78,6 +78,10 @@ public sealed class RoadGraphStore
             VerifiedEdges = graph.Edges.Count(e => e.Verified && !e.Blocked),
             LearnedEdges = graph.Edges.Count(e => e.Source.Equals("trace", StringComparison.OrdinalIgnoreCase)),
             AutoEdges = graph.Edges.Count(e => e.Source.Equals("auto", StringComparison.OrdinalIgnoreCase)),
+            AiLearnedEdges = graph.Edges.Count(e =>
+                e.AiConfidence > 0 ||
+                Math.Abs(e.AiRiskAdjustment) > 1e-9 ||
+                (e.VehicleSpeedMultipliers?.Count ?? 0) > 0),
             NetworkKm = meters / 1000.0
         };
     }
@@ -168,6 +172,114 @@ public sealed class RoadGraphStore
 
         graph.Version = Math.Max(graph.Version, 3);
         graph.UpdatedUtc = DateTime.UtcNow;
+    }
+
+
+    public int RecordNavigationExperience(
+        RoadGraph graph,
+        NavigationExperience experience)
+    {
+        var changed = 0;
+
+        foreach (var observation in experience.EdgeObservations)
+        {
+            if (observation.Samples < 2 ||
+                observation.DistanceKm < 0.015 ||
+                observation.MaxDeviationMeters > 140)
+                continue;
+
+            var edge = graph.Edges.FirstOrDefault(e =>
+                e.Id.Equals(
+                    observation.EdgeId,
+                    StringComparison.OrdinalIgnoreCase));
+
+            if (edge == null)
+                continue;
+
+            edge.Traversals++;
+            changed++;
+
+            // Strong real-driving evidence can promote an automatic guess.
+            if (edge.Source.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
+                observation.Samples >= 3 &&
+                observation.DistanceKm >= 0.03 &&
+                observation.MaxDeviationMeters <= 90)
+            {
+                edge.Source = "trace";
+                edge.Verified = true;
+                edge.AutoScore = 0;
+            }
+        }
+
+        if (changed > 0)
+            graph.UpdatedUtc = DateTime.UtcNow;
+
+        return changed;
+    }
+
+    public int ApplyAiSuggestions(
+        RoadGraph graph,
+        IEnumerable<AiRoadSuggestion> suggestions,
+        double minimumConfidence = 0.72)
+    {
+        var applied = 0;
+
+        foreach (var suggestion in suggestions)
+        {
+            if (suggestion.Confidence < minimumConfidence)
+                continue;
+
+            var edge = graph.Edges.FirstOrDefault(e =>
+                e.Id.Equals(suggestion.EdgeId, StringComparison.OrdinalIgnoreCase));
+
+            if (edge == null)
+                continue;
+
+            edge.AiRiskAdjustment = Math.Clamp(
+                suggestion.RiskDelta,
+                -0.20,
+                0.20);
+
+            edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
+            edge.VehicleSpeedMultipliers[suggestion.VehicleId] =
+                Math.Clamp(suggestion.SpeedMultiplier, 0.55, 1.25);
+
+            edge.AiConfidence = Math.Clamp(suggestion.Confidence, 0, 1);
+            edge.AiNote = suggestion.Reason ?? "";
+            edge.AiUpdatedUtc = DateTime.UtcNow;
+            applied++;
+        }
+
+        if (applied > 0)
+            graph.UpdatedUtc = DateTime.UtcNow;
+
+        return applied;
+    }
+
+    public int RemoveAiLearning(RoadGraph graph)
+    {
+        var changed = 0;
+
+        foreach (var edge in graph.Edges)
+        {
+            if ((edge.VehicleSpeedMultipliers?.Count ?? 0) == 0 &&
+                Math.Abs(edge.AiRiskAdjustment) <= 1e-9 &&
+                edge.AiConfidence <= 0 &&
+                string.IsNullOrWhiteSpace(edge.AiNote))
+                continue;
+
+            edge.VehicleSpeedMultipliers = new Dictionary<string, double>();
+            edge.AiRiskAdjustment = 0;
+            edge.AiConfidence = 0;
+            edge.AiNote = "";
+            edge.AiUpdatedUtc = null;
+            changed++;
+        }
+
+        if (changed > 0)
+            graph.UpdatedUtc = DateTime.UtcNow;
+
+        return changed;
     }
 
     public int RemoveAutoGraph(RoadGraph graph)
@@ -313,6 +425,9 @@ public sealed class RoadGraphStore
     {
         graph.Nodes ??= new List<RoadNode>();
         graph.Edges ??= new List<RoadEdge>();
+
+        foreach (var edge in graph.Edges)
+            edge.VehicleSpeedMultipliers ??= new Dictionary<string, double>();
 
         var nodeIds = graph.Nodes
             .Where(n => !string.IsNullOrWhiteSpace(n.Id))
