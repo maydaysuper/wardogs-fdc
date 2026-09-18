@@ -16,12 +16,15 @@ public sealed class MainForm : Form
     private readonly NavigationHazardStore _hazards = new();
     private readonly NavigationVisionEvidenceStore _visionEvidence = new();
     private readonly NavigationExperienceStore _experiences = new();
+    private readonly NavigationMapMemoryStore _visualMapMemory = new();
     private readonly NavigationLearningSession _navigationLearning = new();
     private readonly NavigationGuidanceTracker _guidance = new();
     private readonly TraceLearningService _traceLearning = new();
     private readonly AutoRoadExtractor _autoRoadExtractor;
     private readonly AiNavigationLearningService _aiNavigationLearning;
     private readonly AiVisionNavigationService _aiVision;
+    private readonly MapVisualRegistrationService _mapVisualRegistration;
+    private readonly TargetMarkerDetector _targetMarkerDetector = new();
     private readonly RoutePlanner _routes;
     private readonly GameWindowCapture _capture = new();
     private readonly CoordinateRecognizer _ocr = new();
@@ -34,6 +37,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _routeMode = new();
     private readonly ComboBox _navVehicle = new();
     private readonly CheckBox _autoTargetCheck = new();
+    private readonly CheckBox _visualTargetCheck = new();
     private readonly TextBox _selfX = new();
     private readonly TextBox _selfY = new();
     private readonly TextBox _targetX = new();
@@ -81,6 +85,8 @@ public sealed class MainForm : Form
     private DateTime _lastAutoVisionScan = DateTime.MinValue;
     private DateTime _lastTargetOcrUtc = DateTime.MinValue;
     private DateTime _lastRerouteUtc = DateTime.MinValue;
+    private MapViewportRegistration? _lastMapRegistration;
+    private VisualTargetDetection? _lastVisualTargetDetection;
     private CancellationTokenSource? _visionCts;
 
     public MainForm()
@@ -93,6 +99,9 @@ public sealed class MainForm : Form
         _autoRoadExtractor = new AutoRoadExtractor(_mapAssets);
         _aiNavigationLearning = new AiNavigationLearningService(_ai);
         _aiVision = new AiVisionNavigationService(_ai, _mapAssets);
+        _mapVisualRegistration =
+            new MapVisualRegistrationService(
+                _mapAssets);
 
         Text = "WARDOGS Tactical Navigator";
         Width = 1420;
