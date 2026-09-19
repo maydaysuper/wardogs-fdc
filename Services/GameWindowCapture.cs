@@ -339,7 +339,7 @@ public sealed class GameWindowCapture
                 return null;
 
             using var native =
-                Image.FromHbitmap(
+                Bitmap.FromHbitmap(
                     bitmapHandle);
 
             return new Bitmap(
