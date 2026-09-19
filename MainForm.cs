@@ -862,8 +862,9 @@ public sealed class MainForm : Form
             _settings.GameWindowTitleContains =
                 _windowTitle.Text.Trim();
 
-            _settings.CaptureWindowTitleContains =
-                _captureTitle.Text.Trim();
+            // v0.12 captures the game directly. Clear the old OBS/preview
+            // source setting when saving so it cannot silently reappear.
+            _settings.CaptureWindowTitleContains = "";
 
             _settings.CaptureBackend =
                 CaptureBackendFromUi(
