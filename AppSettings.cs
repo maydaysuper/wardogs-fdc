@@ -5,6 +5,7 @@ namespace WardogsNavigator;
 public enum CaptureBackendMode
 {
     Auto,
+    NativeWindow,
     ScreenCopy,
     PrintWindow
 }
