@@ -123,7 +123,7 @@ public sealed class MainForm : Form
             new MapVisualRegistrationService(
                 _mapAssets);
 
-        Text = "WARDOGS Tactical Navigator · 0.11.1";
+        Text = "WARDOGS Tactical Navigator · 0.12.0";
         Width = 1460;
         Height = 860;
         MinimumSize = new Size(1100, 680);
@@ -188,7 +188,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Left,
             Width = 300,
-            Text = "WARDOGS  NAVIGATOR\r\n0.11.1",
+            Text = "WARDOGS  NAVIGATOR\r\n0.12.0",
             ForeColor = Color.White,
             Font = new Font(
                 "Microsoft YaHei UI",
@@ -820,9 +820,8 @@ public sealed class MainForm : Form
         p.Controls.Add(_windowTitle);
 
         _captureTitle.Width = 360;
-        _captureTitle.PlaceholderText =
-            "可选：OBS Projector / OBS预览窗口标题；留空则使用游戏窗口";
-        p.Controls.Add(_captureTitle);
+        _captureTitle.Visible = false;
+        _captureTitle.TabStop = false;
 
         _captureBackend.DropDownStyle =
             ComboBoxStyle.DropDownList;
@@ -830,9 +829,10 @@ public sealed class MainForm : Form
         _captureBackend.Items.AddRange(
             new object[]
             {
-                "自动",
-                "屏幕拷贝",
-                "PrintWindow兼容"
+                "自动（原生优先）",
+                "原生游戏窗口",
+                "屏幕拷贝回退",
+                "PrintWindow兼容回退"
             });
 
         _performanceMode.DropDownStyle =
@@ -880,14 +880,14 @@ public sealed class MainForm : Form
             UpdateSystemStatus();
         };
 
-        var testCapture = Btn("测试采集源");
+        var testCapture = Btn("测试原生游戏采集");
         testCapture.Click += (_, _) =>
         {
             try
             {
                 using var bitmap =
                     _capture.CaptureClient(
-                        CaptureSourceTitle(),
+                        _settings.GameWindowTitleContains,
                         _settings.CaptureBackend);
 
                 MessageBox.Show(
@@ -977,7 +977,8 @@ public sealed class MainForm : Form
             ForeColor = Color.Silver,
             Text =
                 "校准区域按游戏窗口客户区比例保存，因此 1080p / 1440p / 4K 切换后仍可复用。\r\n\r\n" +
-                "“游戏地图视觉区域”用于地图配准；“前方道路视觉区域”用于 v0.11 连续视觉运动估计，尽量避开固定 HUD。\r\n\r\n" +
+                "v0.12 不再依赖 OBS。纯视觉帧直接从 WARDOGS 游戏窗口获取：原生窗口捕获优先，失败时自动回退屏幕拷贝/PrintWindow。\r\n\r\n" +
+                "“游戏地图视觉区域”用于地图配准；“前方道路视觉区域”直接送入本地视觉运动/后续 AI 道路模型，尽量避开固定 HUD。\r\n\r\n" +
                 "速度 HUD 建议只框住 km/h 数字。速度 OCR + 帧间运动 + Road Graph 吸附共同估计累计里程和当前位置。\r\n\r\n" +
                 "目标标记图标只需校准一次：打开游戏地图、放一个目标标记，然后点“校准目标标记图标”并点击标记中心。\r\n\r\n" +
                 "程序只抓取屏幕像素；不读取进程内存、不注入、不安装驱动，也不控制车辆输入。"
@@ -3411,8 +3412,7 @@ public sealed class MainForm : Form
 
         _calibrationStatus.Text =
             "游戏窗口：" + _settings.GameWindowTitleContains + "\r\n" +
-            "采集源：" + CaptureSourceTitle() +
-            " · " + _settings.CaptureBackend +
+            "纯视觉源：游戏窗口直采 · " + _settings.CaptureBackend +
             " · " + _settings.PerformanceMode + "\r\n" +
             "当前位置区域：" + FormatRegion(_settings.PlayerRegion) + "\r\n" +
             "目标坐标 OCR 区域：" + FormatRegion(_settings.TargetRegion) + "\r\n" +
@@ -3432,21 +3432,25 @@ public sealed class MainForm : Form
         CaptureBackendMode mode) =>
         mode switch
         {
+            CaptureBackendMode.NativeWindow =>
+                "原生游戏窗口",
             CaptureBackendMode.ScreenCopy =>
-                "屏幕拷贝",
+                "屏幕拷贝回退",
             CaptureBackendMode.PrintWindow =>
-                "PrintWindow兼容",
+                "PrintWindow兼容回退",
             _ =>
-                "自动"
+                "自动（原生优先）"
         };
 
     private static CaptureBackendMode CaptureBackendFromUi(
         string text) =>
         text switch
         {
-            "屏幕拷贝" =>
+            "原生游戏窗口" =>
+                CaptureBackendMode.NativeWindow,
+            "屏幕拷贝回退" =>
                 CaptureBackendMode.ScreenCopy,
-            "PrintWindow兼容" =>
+            "PrintWindow兼容回退" =>
                 CaptureBackendMode.PrintWindow,
             _ =>
                 CaptureBackendMode.Auto
@@ -3478,10 +3482,10 @@ public sealed class MainForm : Form
 
     private string CaptureSourceTitle()
     {
-        return string.IsNullOrWhiteSpace(
-                _settings.CaptureWindowTitleContains)
-            ? _settings.GameWindowTitleContains
-            : _settings.CaptureWindowTitleContains;
+        // v0.12: screen/OCR/visual pipelines capture WARDOGS directly.
+        // CaptureWindowTitleContains is retained only so older settings files
+        // remain loadable; it is no longer used as an OBS/preview source.
+        return _settings.GameWindowTitleContains;
     }
 
     private int EffectiveTargetScanSeconds()
@@ -3563,7 +3567,7 @@ public sealed class MainForm : Form
         catch
         {
             _systemStatus.Text =
-                "WARDOGS 0.11.1";
+                "WARDOGS 0.12.0";
         }
     }
 
