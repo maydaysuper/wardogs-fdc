@@ -65,8 +65,17 @@ public sealed class V010RegressionTests
     public void CaptureBackendPolicy_SelectsExpectedOrderAndFallback()
     {
         Assert.Equal(
-            new[] { CaptureBackendMode.ScreenCopy, CaptureBackendMode.PrintWindow },
+            new[]
+            {
+                CaptureBackendMode.NativeWindow,
+                CaptureBackendMode.ScreenCopy,
+                CaptureBackendMode.PrintWindow
+            },
             CaptureBackendPolicy.GetAttemptOrder(CaptureBackendMode.Auto));
+
+        Assert.Equal(
+            new[] { CaptureBackendMode.NativeWindow },
+            CaptureBackendPolicy.GetAttemptOrder(CaptureBackendMode.NativeWindow));
 
         Assert.Equal(
             new[] { CaptureBackendMode.ScreenCopy },
