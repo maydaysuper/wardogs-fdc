@@ -4,8 +4,14 @@ public static class CaptureBackendPolicy
 {
     private static readonly CaptureBackendMode[] AutoOrder =
     {
+        CaptureBackendMode.NativeWindow,
         CaptureBackendMode.ScreenCopy,
         CaptureBackendMode.PrintWindow
+    };
+
+    private static readonly CaptureBackendMode[] NativeWindowOnly =
+    {
+        CaptureBackendMode.NativeWindow
     };
 
     private static readonly CaptureBackendMode[] ScreenCopyOnly =
@@ -22,6 +28,7 @@ public static class CaptureBackendPolicy
         CaptureBackendMode requested) =>
         requested switch
         {
+            CaptureBackendMode.NativeWindow => NativeWindowOnly,
             CaptureBackendMode.ScreenCopy => ScreenCopyOnly,
             CaptureBackendMode.PrintWindow => PrintWindowOnly,
             _ => AutoOrder
