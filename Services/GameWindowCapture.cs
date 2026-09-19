@@ -86,7 +86,7 @@ public sealed class GameWindowCapture
             var hwnd = FindWindow(titleContains);
             if (hwnd == IntPtr.Zero)
                 throw new InvalidOperationException(
-                    "未找到采集窗口。请检查游戏/OBS窗口标题。");
+                    "未找到游戏采集窗口。请检查游戏窗口标题。");
 
             if (!GetClientRect(hwnd, out var rc))
                 throw new InvalidOperationException("无法读取采集窗口客户区。");
@@ -97,88 +97,100 @@ public sealed class GameWindowCapture
 
             var crop = NormalizedToPixel(region, clientSize);
             var attempts = CaptureBackendPolicy.GetAttemptOrder(backend);
+            var failures = new List<string>();
 
-            if (attempts.Count == 1 &&
-                attempts[0] == CaptureBackendMode.PrintWindow)
+            foreach (var attempt in attempts)
             {
-                var printed = TryCaptureClientPrintWindow(hwnd, clientSize);
-                if (printed != null)
+                Bitmap? full = null;
+
+                try
                 {
-                    LastBackendUsed = "PrintWindow";
-                    using (printed)
-                        return Crop(printed, crop);
+                    switch (attempt)
+                    {
+                        case CaptureBackendMode.NativeWindow:
+                            full = TryCaptureClientNativeWindow(
+                                hwnd,
+                                clientSize);
+
+                            if (full == null)
+                            {
+                                failures.Add("NativeWindow: unavailable");
+                                continue;
+                            }
+
+                            if (IsProbablyBlank(full))
+                            {
+                                failures.Add("NativeWindow: blank frame");
+                                full.Dispose();
+                                full = null;
+                                continue;
+                            }
+
+                            LastBackendUsed = "NativeWindow";
+                            using (full)
+                                return Crop(full, crop);
+
+                        case CaptureBackendMode.ScreenCopy:
+                            var screen =
+                                CaptureFromScreen(
+                                    hwnd,
+                                    clientSize,
+                                    crop);
+
+                            if (backend == CaptureBackendMode.Auto &&
+                                IsProbablyBlank(screen))
+                            {
+                                failures.Add("ScreenCopy: blank frame");
+                                screen.Dispose();
+                                continue;
+                            }
+
+                            LastBackendUsed = "ScreenCopy";
+                            return screen;
+
+                        case CaptureBackendMode.PrintWindow:
+                            full = TryCaptureClientPrintWindow(
+                                hwnd,
+                                clientSize);
+
+                            if (full == null)
+                            {
+                                failures.Add("PrintWindow: unavailable");
+                                continue;
+                            }
+
+                            if (backend == CaptureBackendMode.Auto &&
+                                IsProbablyBlank(full))
+                            {
+                                failures.Add("PrintWindow: blank frame");
+                                full.Dispose();
+                                full = null;
+                                continue;
+                            }
+
+                            LastBackendUsed =
+                                backend == CaptureBackendMode.Auto
+                                    ? "PrintWindow(fallback)"
+                                    : "PrintWindow";
+
+                            using (full)
+                                return Crop(full, crop);
+                    }
                 }
-
-                throw new InvalidOperationException(
-                    "PrintWindow 采集失败。可切换到“自动”或“屏幕拷贝”。");
-            }
-
-            if (attempts.Count == 1 &&
-                attempts[0] == CaptureBackendMode.ScreenCopy)
-            {
-                LastBackendUsed = "ScreenCopy";
-                return CaptureFromScreen(hwnd, clientSize, crop);
-            }
-
-            // Auto: prefer screen copy for games because it has the lowest
-            // latency. If the window is off-screen/covered, CopyFromScreen
-            // fails, or the result looks blank, try PrintWindow. This is
-            // especially useful for OBS projector/preview windows.
-            Bitmap? screen = null;
-            var screenSucceeded = false;
-            var screenProbablyBlank = true;
-
-            try
-            {
-                screen = CaptureFromScreen(hwnd, clientSize, crop);
-                screenSucceeded = true;
-                screenProbablyBlank = IsProbablyBlank(screen);
-
-                if (CaptureBackendPolicy.ShouldAcceptScreenCopy(
-                        backend,
-                        screenSucceeded,
-                        screenProbablyBlank))
+                catch (Exception ex)
                 {
-                    LastBackendUsed = "ScreenCopy";
-                    return screen;
-                }
-            }
-            catch
-            {
-                screenSucceeded = false;
-                screenProbablyBlank = true;
-            }
-            finally
-            {
-                if (screen != null &&
-                    !CaptureBackendPolicy.ShouldAcceptScreenCopy(
-                        backend,
-                        screenSucceeded,
-                        screenProbablyBlank))
-                {
-                    screen.Dispose();
-                }
-            }
-
-            if (CaptureBackendPolicy.ShouldFallbackToPrintWindow(
-                    backend,
-                    screenSucceeded,
-                    screenProbablyBlank))
-            {
-                var printed = TryCaptureClientPrintWindow(hwnd, clientSize);
-                if (printed != null)
-                {
-                    LastBackendUsed = "PrintWindow(auto-fallback)";
-                    using (printed)
-                        return Crop(printed, crop);
+                    full?.Dispose();
+                    failures.Add(
+                        attempt +
+                        ": " +
+                        ex.Message);
                 }
             }
 
             throw new InvalidOperationException(
-                screenSucceeded && screenProbablyBlank
-                    ? "屏幕采集结果疑似黑帧，PrintWindow 回退也失败。"
-                    : "屏幕采集失败，PrintWindow 回退也失败。请检查窗口模式、标题和采集后端。"
-            );
+                "原生游戏画面采集失败。已尝试：" +
+                string.Join(" | ", failures) +
+                "。请使用窗口化/无边框模式，或切换采集后端。");
         }
         finally
         {
@@ -279,6 +291,85 @@ public sealed class GameWindowCapture
         return bmp;
     }
 
+    private static Bitmap? TryCaptureClientNativeWindow(
+        IntPtr hwnd,
+        Size size)
+    {
+        IntPtr sourceDc = IntPtr.Zero;
+        IntPtr memoryDc = IntPtr.Zero;
+        IntPtr bitmapHandle = IntPtr.Zero;
+        IntPtr previousObject = IntPtr.Zero;
+
+        try
+        {
+            sourceDc = GetDC(hwnd);
+            if (sourceDc == IntPtr.Zero)
+                return null;
+
+            memoryDc = CreateCompatibleDC(sourceDc);
+            if (memoryDc == IntPtr.Zero)
+                return null;
+
+            bitmapHandle = CreateCompatibleBitmap(
+                sourceDc,
+                size.Width,
+                size.Height);
+
+            if (bitmapHandle == IntPtr.Zero)
+                return null;
+
+            previousObject =
+                SelectObject(
+                    memoryDc,
+                    bitmapHandle);
+
+            var copied =
+                BitBlt(
+                    memoryDc,
+                    0,
+                    0,
+                    size.Width,
+                    size.Height,
+                    sourceDc,
+                    0,
+                    0,
+                    Srccopy | CaptureBlt);
+
+            if (!copied)
+                return null;
+
+            using var native =
+                Image.FromHbitmap(
+                    bitmapHandle);
+
+            return new Bitmap(
+                native);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (previousObject != IntPtr.Zero &&
+                memoryDc != IntPtr.Zero)
+            {
+                SelectObject(
+                    memoryDc,
+                    previousObject);
+            }
+
+            if (bitmapHandle != IntPtr.Zero)
+                DeleteObject(bitmapHandle);
+
+            if (memoryDc != IntPtr.Zero)
+                DeleteDC(memoryDc);
+
+            if (sourceDc != IntPtr.Zero)
+                ReleaseDC(hwnd, sourceDc);
+        }
+    }
+
     private static Bitmap? TryCaptureClientPrintWindow(
         IntPtr hwnd,
         Size size)
@@ -373,6 +464,8 @@ public sealed class GameWindowCapture
     }
 
     private const uint PW_CLIENTONLY = 0x00000001;
+    private const uint Srccopy = 0x00CC0020;
+    private const uint CaptureBlt = 0x40000000;
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -384,6 +477,23 @@ public sealed class GameWindowCapture
     [DllImport("user32.dll")] private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
     [DllImport("user32.dll")] private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
     [DllImport("user32.dll")] private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+    [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr hdc);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+    [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr ho);
+    [DllImport("gdi32.dll")] private static extern bool BitBlt(
+        IntPtr hdcDest,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        IntPtr hdcSrc,
+        int x1,
+        int y1,
+        uint rop);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
